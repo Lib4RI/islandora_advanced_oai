@@ -94,4 +94,4 @@ Error Masking: Detailed SPARQL/Fedora exceptions are logged to the Drupal Watchd
 
 License
 
-GPLv2 or later.
+ LGPL-2.1 license 
