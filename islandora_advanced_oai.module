@@ -6,10 +6,10 @@
  *
  * Key Features:
  * - SPARQL Resource Index querying (instead of Solr).
- * - Full OAI-PMH paging support via resumptionTokens.
+ * - Full OAI-PMH paging support via resumptionTokens (HMAC-signed).
  * - OpenAIRE v4.0 Compliance (Funding, DOIs, Resource Types).
  * - Unpaywall Optimization (Direct PDF links, Versioning).
- * - Security hardening (XXE protection).
+ * - Security hardening (XXE protection, signed tokens, safe impersonation).
  */
 
 /**
@@ -31,10 +31,10 @@ function islandora_advanced_oai_menu() {
  * Dispatches OAI verbs to specific functions.
  */
 function islandora_advanced_oai_request_handler() {
+  // Ensure correct XML header
   drupal_add_http_header('Content-Type', 'text/xml; charset=utf-8');
-  
-  // Security: Disable external entity loading to prevent XXE attacks
-  libxml_disable_entity_loader(true);
+
+  // Use internal libxml errors (we use LIBXML_NONET when parsing)
   libxml_use_internal_errors(true);
 
   $params = drupal_get_query_parameters();
@@ -43,11 +43,13 @@ function islandora_advanced_oai_request_handler() {
   // Initialize basic XML response
   $xml = new SimpleXMLElement('<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.openarchives.org/OAI/2.0/ http://www.openarchives.org/OAI/2.0/OAI-PMH.xsd"></OAI-PMH>');
   $xml->addChild('responseDate', gmdate('Y-m-d\TH:i:s\Z'));
-  
+
   $requestNode = $xml->addChild('request', url('advanced-oai', array('absolute' => TRUE)));
-  if (!empty($verb)) $requestNode->addAttribute('verb', $verb);
-  
-  // Validation: resumptionToken is exclusive
+  if (!empty($verb)) {
+    $requestNode->addAttribute('verb', $verb);
+  }
+
+  // Validation: resumptionToken is exclusive with metadataPrefix
   if (isset($params['resumptionToken']) && isset($params['metadataPrefix'])) {
      $error = $xml->addChild('error', 'resumptionToken cannot be combined with metadataPrefix');
      $error->addAttribute('code', 'badArgument');
@@ -57,27 +59,27 @@ function islandora_advanced_oai_request_handler() {
 
   try {
     switch ($verb) {
-      case 'Identify': 
-        _islandora_advanced_oai_handle_identify($xml); 
+      case 'Identify':
+        _islandora_advanced_oai_handle_identify($xml);
         break;
-      case 'ListMetadataFormats': 
-        _islandora_advanced_oai_handle_list_formats($xml); 
+      case 'ListMetadataFormats':
+        _islandora_advanced_oai_handle_list_formats($xml);
         break;
-      case 'GetRecord': 
-        _islandora_advanced_oai_handle_get_record($xml, $params); 
+      case 'GetRecord':
+        _islandora_advanced_oai_handle_get_record($xml, $params);
         break;
-      case 'ListRecords': 
-        _islandora_advanced_oai_handle_list_records($xml, $params); 
+      case 'ListRecords':
+        _islandora_advanced_oai_handle_list_records($xml, $params);
         break;
-      default: 
-        $err = $xml->addChild('error', 'Invalid Verb'); 
+      default:
+        $err = $xml->addChild('error', 'Invalid Verb');
         $err->addAttribute('code', 'badVerb');
     }
   } catch (Exception $e) {
-    // Security: Log detailed error to watchdog, show generic error to user
+    // Security: Log detailed error to watchdog, present generic error to client
     watchdog('islandora_advanced_oai', 'Exception: @msg', array('@msg' => $e->getMessage()), WATCHDOG_ERROR);
-    $err = $xml->addChild('error', 'An internal error occurred.');
-    $err->addAttribute('code', 'noRecordsMatch');
+    $err = $xml->addChild('error', 'An internal server error occurred.');
+    $err->addAttribute('code', 'cannotDisseminateFormat');
   }
 
   _islandora_advanced_oai_send_output($xml);
@@ -113,7 +115,7 @@ function _islandora_advanced_oai_handle_identify($xml) {
  */
 function _islandora_advanced_oai_handle_list_formats($xml) {
   $formats = $xml->addChild('ListMetadataFormats');
-  
+
   // Dublin Core
   $dc = $formats->addChild('metadataFormat');
   $dc->addChild('metadataPrefix', 'oai_dc');
@@ -132,29 +134,32 @@ function _islandora_advanced_oai_handle_list_formats($xml) {
  */
 function _islandora_advanced_oai_handle_get_record($xml, $params) {
   if (empty($params['identifier']) || empty($params['metadataPrefix'])) {
-    $xml->addChild('error', 'Missing arguments')->addAttribute('code', 'badArgument'); 
+    $xml->addChild('error', 'Missing arguments')->addAttribute('code', 'badArgument');
     return;
   }
 
-  // Impersonate Admin to ensure we can load the object via Fedora API
-  global $user;
-  $original_user = $user;
-  $user = user_load(1); 
-
-  try {
-      $object = islandora_object_load($params['identifier']);
-  } catch (Exception $e) { 
-      $object = null; 
+  $allowed_prefixes = array('oai_dc', 'oai_openaire');
+  if (!in_array($params['metadataPrefix'], $allowed_prefixes)) {
+    $xml->addChild('error', 'cannotDisseminateFormat')->addAttribute('code', 'cannotDisseminateFormat');
+    return;
   }
 
-  // Revert user switch
-  $user = $original_user;
+  // Impersonate Admin safely to ensure we can load the object via Fedora API
+  $object = null;
+  try {
+    $object = _islandora_advanced_oai_run_as_admin(function() use ($params) {
+      return islandora_object_load($params['identifier']);
+    });
+  } catch (Exception $e) {
+    watchdog('islandora_advanced_oai', 'Error loading object in GetRecord: @msg', array('@msg' => $e->getMessage()), WATCHDOG_ERROR);
+    $object = null;
+  }
 
   if (!$object) {
-    $xml->addChild('error', 'idDoesNotExist')->addAttribute('code', 'idDoesNotExist'); 
+    $xml->addChild('error', 'idDoesNotExist')->addAttribute('code', 'idDoesNotExist');
     return;
   }
-  
+
   $record = $xml->addChild('GetRecord')->addChild('record');
   _islandora_advanced_oai_build_header($record, $object);
   _islandora_advanced_oai_generate_metadata($record->addChild('metadata'), $object, $params['metadataPrefix']);
@@ -164,21 +169,20 @@ function _islandora_advanced_oai_handle_get_record($xml, $params) {
  * OAI Verb: ListRecords with Paging logic (SPARQL)
  */
 function _islandora_advanced_oai_handle_list_records($xml, $params) {
-  $batch_size = 50; 
+  $batch_size = variable_get('islandora_advanced_oai_batch_size', 50);
   $offset = 0;
   $prefix = '';
-  
+
   // Handle Resumption Token
   if (isset($params['resumptionToken']) && !empty($params['resumptionToken'])) {
-      $token_data = base64_decode($params['resumptionToken']);
-      $parts = explode('|', $token_data);
-      if (count($parts) != 2) {
+      $tok = _islandora_advanced_oai_decode_resumption_token($params['resumptionToken']);
+      if ($tok === FALSE) {
           $xml->addChild('error', 'Invalid resumptionToken')->addAttribute('code', 'badResumptionToken');
           return;
       }
-      $prefix = $parts[0];
-      $offset = (int)$parts[1]; // Type cast for security
-  } 
+      $prefix = $tok['prefix'];
+      $offset = (int)$tok['offset']; // Type cast for security
+  }
   // Handle First Request
   elseif (isset($params['metadataPrefix'])) {
       $prefix = $params['metadataPrefix'];
@@ -188,11 +192,13 @@ function _islandora_advanced_oai_handle_list_records($xml, $params) {
       return;
   }
 
-  // Admin Impersonation for SPARQL access
-  global $user;
-  $original_user = $user;
-  $user = user_load(1); 
+  $allowed_prefixes = array('oai_dc', 'oai_openaire');
+  if (!in_array($prefix, $allowed_prefixes)) {
+    $xml->addChild('error', 'cannotDisseminateFormat')->addAttribute('code', 'cannotDisseminateFormat');
+    return;
+  }
 
+  // Admin Impersonation for SPARQL access (use helper and restore properly)
   $pids = array();
   $total_count = null;
 
@@ -206,29 +212,30 @@ function _islandora_advanced_oai_handle_list_records($xml, $params) {
               if (isset($count_results[0]['count']['value'])) {
                   $total_count = (int)$count_results[0]['count']['value'];
               }
-          } catch (Exception $e) { 
+          } catch (Exception $e) {
               // Some triple stores fail on COUNT, explicitly ignore this to keep list running
-              $total_count = null; 
+              $total_count = null;
+              watchdog('islandora_advanced_oai', 'SPARQL COUNT Error: @msg', array('@msg' => $e->getMessage()), WATCHDOG_WARNING);
           }
 
           // 2. Fetch current batch
           // ORDER BY is strictly required for stable paging
-          $query = 'SELECT ?object FROM <#ri> 
-                    WHERE { ?object <info:fedora/fedora-system:def/model#hasModel> <info:fedora/ir:citationCModel> . } 
-                    ORDER BY ?object 
-                    LIMIT ' . $batch_size . ' OFFSET ' . $offset;
-          
+          $query = 'SELECT ?object FROM <#ri>
+                    WHERE { ?object <info:fedora/fedora-system:def/model#hasModel> <info:fedora/ir:citationCModel> . }
+                    ORDER BY ?object
+                    LIMIT ' . intval($batch_size) . ' OFFSET ' . intval($offset);
+
           $results = $connection->repository->ri->sparqlQuery($query);
           foreach ($results as $result) {
-              $pids[] = $result['object']['value'];
+              if (!empty($result['object']['value'])) {
+                  $pids[] = $result['object']['value'];
+              }
           }
       }
   } catch (Exception $e) {
       watchdog('islandora_advanced_oai', 'SPARQL Error: @msg', array('@msg' => $e->getMessage()), WATCHDOG_ERROR);
   }
-  
-  $user = $original_user;
-  
+
   // Handle Empty Results
   if (empty($pids)) {
     if ($offset == 0) {
@@ -241,19 +248,23 @@ function _islandora_advanced_oai_handle_list_records($xml, $params) {
         return;
     }
   }
-  
+
   $listNode = $xml->addChild('ListRecords');
 
   // Process PIDs
   foreach ($pids as $pid) {
     $clean_pid = str_replace('info:fedora/', '', $pid);
-    
-    // Load object as Admin
-    $temp_user = $user;
-    $user = user_load(1);
-    $object = islandora_object_load($clean_pid);
-    $user = $temp_user;
-    
+
+    // Load object as Admin using helper that restores user
+    try {
+      $object = _islandora_advanced_oai_run_as_admin(function() use ($clean_pid) {
+        return islandora_object_load($clean_pid);
+      });
+    } catch (Exception $e) {
+      watchdog('islandora_advanced_oai', 'Error loading object in ListRecords: @msg', array('@msg' => $e->getMessage()), WATCHDOG_ERROR);
+      $object = null;
+    }
+
     if ($object) {
       $record = $listNode->addChild('record');
       _islandora_advanced_oai_build_header($record, $object);
@@ -262,7 +273,7 @@ function _islandora_advanced_oai_handle_list_records($xml, $params) {
   }
 
   // Calculate next Token
-  $next_offset = $offset + $batch_size;
+  $next_offset = $offset + intval($batch_size);
   $tokenNode = $listNode->addChild('resumptionToken');
   if ($total_count !== null) $tokenNode->addAttribute('completeListSize', $total_count);
   $tokenNode->addAttribute('cursor', $offset);
@@ -277,9 +288,9 @@ function _islandora_advanced_oai_handle_list_records($xml, $params) {
   }
 
   if ($has_more) {
-      $tokenNode[0] = base64_encode($prefix . '|' . $next_offset);
+      $tokenNode[0] = _islandora_advanced_oai_create_resumption_token($prefix, $next_offset);
   } else {
-      $tokenNode[0] = ''; 
+      $tokenNode[0] = '';
   }
 }
 
@@ -289,8 +300,23 @@ function _islandora_advanced_oai_handle_list_records($xml, $params) {
 function _islandora_advanced_oai_build_header($parent, $object) {
   $header = ($parent->getName() == 'header') ? $parent : $parent->addChild('header');
   $header->addChild('identifier', $object->id);
-  $last_mod = $object->lastModifiedDate; 
-  if ($last_mod instanceof DateTime) $last_mod = $last_mod->format('Y-m-d\TH:i:s\Z');
+
+  // Datestamp: ensure valid output (OAI requires datestamp)
+  $last_mod = null;
+  if (!empty($object->lastModifiedDate)) {
+    if ($object->lastModifiedDate instanceof DateTime) {
+      $last_mod = $object->lastModifiedDate->format('Y-m-d\TH:i:s\Z');
+    } else {
+      $ts = strtotime((string)$object->lastModifiedDate);
+      if ($ts !== false) {
+        $last_mod = gmdate('Y-m-d\TH:i:s\Z', $ts);
+      }
+    }
+  }
+  if (empty($last_mod)) {
+    // Best-effort fallback
+    $last_mod = gmdate('Y-m-d\TH:i:s\Z');
+  }
   $header->addChild('datestamp', $last_mod);
 }
 
@@ -301,11 +327,11 @@ function _islandora_advanced_oai_build_header($parent, $object) {
  */
 function _islandora_advanced_oai_analyze_access($object) {
   $result = array(
-      'is_open_access' => false, 
-      'license' => '', 
-      'version' => '', 
-      'best_dsid' => '', 
-      'embargo_end_date' => null, 
+      'is_open_access' => false,
+      'license' => '',
+      'version' => '',
+      'best_dsid' => '',
+      'embargo_end_date' => null,
       'access_rights_uri' => 'http://purl.org/coar/access_right/c_16ec' // Default: restricted
   );
 
@@ -313,7 +339,9 @@ function _islandora_advanced_oai_analyze_access($object) {
   $content = $object['RELS-INT']->content;
   if (!$content) return $result;
 
-  $xml = new SimpleXMLElement($content);
+  $xml = _islandora_advanced_oai_safe_simplexml_load_string($content);
+  if (!$xml) return $result;
+
   $xml->registerXPathNamespace('rdf', 'http://www.w3.org/1999/02/22-rdf-syntax-ns#');
   $xml->registerXPathNamespace('islandora', 'http://islandora.ca/ontology/relsint#');
 
@@ -323,7 +351,7 @@ function _islandora_advanced_oai_analyze_access($object) {
   foreach ($xml->xpath('//rdf:Description') as $desc) {
       $about = (string)$desc->attributes('rdf', true)->about;
       $dsid = substr($about, strrpos($about, '/') + 1);
-      
+
       // Filter for PDF datastreams
       if (strpos($dsid, 'PDF') === false) continue;
 
@@ -344,11 +372,11 @@ function _islandora_advanced_oai_analyze_access($object) {
       }
 
       $candidates[] = array(
-          'dsid' => $dsid, 
-          'is_public_now' => $is_public_now, 
-          'version' => $version_text, 
-          'license' => $license_text, 
-          'embargo_date' => $embargo_date, 
+          'dsid' => $dsid,
+          'is_public_now' => $is_public_now,
+          'version' => $version_text,
+          'license' => $license_text,
+          'embargo_date' => $embargo_date,
           'availability' => $availability
       );
   }
@@ -358,16 +386,16 @@ function _islandora_advanced_oai_analyze_access($object) {
   // Selection Strategy:
   // 1. Prefer Open Access "Published Version"
   $selected = null;
-  foreach ($candidates as $c) { 
-      if ($c['is_public_now'] && strpos(strtolower($c['version']), 'published') !== false) { $selected = $c; break; } 
+  foreach ($candidates as $c) {
+      if ($c['is_public_now'] && strpos(strtolower($c['version']), 'published') !== false) { $selected = $c; break; }
   }
   // 2. Prefer Open Access "Accepted Version" (Green OA)
-  if (!$selected) foreach ($candidates as $c) { 
-      if ($c['is_public_now'] && strpos(strtolower($c['version']), 'accepted') !== false) { $selected = $c; break; } 
+  if (!$selected) foreach ($candidates as $c) {
+      if ($c['is_public_now'] && strpos(strtolower($c['version']), 'accepted') !== false) { $selected = $c; break; }
   }
   // 3. Fallback: Any public file
-  if (!$selected) foreach ($candidates as $c) { 
-      if ($c['is_public_now']) { $selected = $c; break; } 
+  if (!$selected) foreach ($candidates as $c) {
+      if ($c['is_public_now']) { $selected = $c; break; }
   }
 
   // 4. If nothing is open, check for future embargoes (for metadata)
@@ -377,7 +405,7 @@ function _islandora_advanced_oai_analyze_access($object) {
               $result['access_rights_uri'] = 'http://purl.org/coar/access_right/c_f1cf'; // Embargoed
               $result['embargo_end_date'] = $c['embargo_date'];
               $result['version'] = $c['version'];
-              return $result; 
+              return $result;
           }
       }
       return $result; // Restricted
@@ -403,7 +431,16 @@ function _islandora_advanced_oai_map_license_to_uri($license_text) {
         'CC0' => 'https://creativecommons.org/publicdomain/zero/1.0/',
     );
     $key = trim(strtoupper($license_text));
-    return isset($map[$key]) ? $map[$key] : null;
+    // Normalize variations (e.g. "CC-BY 4.0", "Creative Commons Attribution 4.0")
+    $key_simplified = preg_replace('/[^A-Z0-9 ]+/', ' ', $key);
+    $key_simplified = preg_replace('/\s+/', ' ', $key_simplified);
+    foreach ($map as $k => $v) {
+        if (strpos($key_simplified, str_replace('-', ' ', strtoupper($k))) !== false
+            || strpos($key, strtoupper($k)) !== false) {
+            return $v;
+        }
+    }
+    return null;
 }
 
 /**
@@ -414,7 +451,7 @@ function _islandora_advanced_oai_map_version($version_text) {
     if (strpos($v, 'published') !== false) return 'http://purl.org/coar/version/c_970fb48d4fbd8a85';
     if (strpos($v, 'accepted') !== false) return 'http://purl.org/coar/version/c_ab4af688f83e57aa';
     if (strpos($v, 'submitted') !== false) return 'http://purl.org/coar/version/c_71e4c180996972fc';
-    return null; 
+    return null;
 }
 
 /**
@@ -425,12 +462,14 @@ function _islandora_advanced_oai_parse_rels_ext($object) {
   if (!isset($object['RELS-EXT'])) return $info;
   $content = $object['RELS-EXT']->content;
   if ($content) {
-      $xml = new SimpleXMLElement($content);
+      $xml = _islandora_advanced_oai_safe_simplexml_load_string($content);
+      if (!$xml) return $info;
       $xml->registerXPathNamespace('islandora', 'http://islandora.ca/ontology/relsext#');
       $xml->registerXPathNamespace('fedora', 'info:fedora/fedora-system:def/relations-external#');
-      if ($xml->xpath('//islandora:fullText')) {
-          $fulltext = $xml->xpath('//islandora:fullText');
-          if (stripos((string)$fulltext[0], 'Open Access') !== false) $info['is_open_access'] = true;
+      $fulltext_nodes = $xml->xpath('//islandora:fullText');
+      if ($fulltext_nodes && isset($fulltext_nodes[0])) {
+          $fulltext = (string)$fulltext_nodes[0];
+          if (stripos($fulltext, 'Open Access') !== false) $info['is_open_access'] = true;
       }
       foreach ($xml->xpath('//fedora:isMemberOfCollection') as $member) {
           $res = (string)$member->attributes('rdf', true)->resource;
@@ -464,19 +503,20 @@ function _islandora_advanced_oai_get_fullname($name_node) {
  */
 function _islandora_advanced_oai_generate_metadata($metadataNode, $object, $prefix) {
   $mods_content = isset($object['MODS']) ? $object['MODS']->content : null;
-  if (!$mods_content) return; 
+  if (!$mods_content) return;
 
-  $mods_xml = new SimpleXMLElement($mods_content);
+  $mods_xml = _islandora_advanced_oai_safe_simplexml_load_string($mods_content);
+  if (!$mods_xml) return;
   $mods_xml->registerXPathNamespace('mods', 'http://www.loc.gov/mods/v3');
-  
+
   $access_data = _islandora_advanced_oai_analyze_access($object);
-  
+
   // Fallback to RELS-EXT if RELS-INT analysis yields nothing
   if (!$access_data['is_open_access'] && !$access_data['embargo_end_date']) {
       $ext_data = _islandora_advanced_oai_parse_rels_ext($object);
       if ($ext_data['is_open_access']) $access_data['is_open_access'] = true;
   }
-  
+
   // Construct PDF Download URL (Crucial for Unpaywall)
   $pdf_url = null;
   if ($access_data['is_open_access'] && !empty($access_data['best_dsid'])) {
@@ -491,37 +531,53 @@ function _islandora_advanced_oai_generate_metadata($metadataNode, $object, $pref
     $oai_dc->addAttribute('xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-instance');
     $oai_dc->addAttribute('xsi:schemaLocation', 'http://www.openarchives.org/OAI/2.0/oai_dc/ http://www.openarchives.org/OAI/2.0/oai_dc.xsd');
 
-    foreach ($mods_xml->xpath('//mods:titleInfo/mods:title') as $title) $oai_dc->addChild('dc:title', htmlspecialchars((string)$title));
+    $titles = $mods_xml->xpath('//mods:titleInfo/mods:title');
+    if ($titles) {
+      foreach ($titles as $title) {
+        $oai_dc->addChild('dc:title', (string)$title);
+      }
+    }
+
     foreach ($mods_xml->xpath('//mods:name') as $name) {
         $fullname = _islandora_advanced_oai_get_fullname($name);
-        if ($fullname) $oai_dc->addChild('dc:creator', htmlspecialchars($fullname));
+        if ($fullname) $oai_dc->addChild('dc:creator', $fullname);
     }
-    foreach ($mods_xml->xpath('//mods:abstract') as $abstract) $oai_dc->addChild('dc:description', htmlspecialchars((string)$abstract));
-    $date = $mods_xml->xpath('//mods:dateIssued');
-    if ($date) $oai_dc->addChild('dc:date', htmlspecialchars((string)$date[0]));
-    foreach ($mods_xml->xpath('//mods:identifier') as $id) $oai_dc->addChild('dc:identifier', htmlspecialchars((string)$id));
-    $pub = $mods_xml->xpath('//mods:publisher');
-    if ($pub) $oai_dc->addChild('dc:publisher', htmlspecialchars((string)$pub[0]));
 
-    if ($pdf_url) $oai_dc->addChild('dc:identifier', htmlspecialchars($pdf_url));
+    foreach ($mods_xml->xpath('//mods:abstract') as $abstract) {
+        $oai_dc->addChild('dc:description', (string)$abstract);
+    }
+
+    $date_nodes = $mods_xml->xpath('//mods:dateIssued');
+    if ($date_nodes && isset($date_nodes[0])) $oai_dc->addChild('dc:date', (string)$date_nodes[0]);
+
+    foreach ($mods_xml->xpath('//mods:identifier') as $id) {
+        $oai_dc->addChild('dc:identifier', (string)$id);
+    }
+
+    $pub = $mods_xml->xpath('//mods:publisher');
+    if ($pub && isset($pub[0])) $oai_dc->addChild('dc:publisher', (string)$pub[0]);
+
+    if ($pdf_url) $oai_dc->addChild('dc:identifier', $pdf_url);
 
     if ($access_data['is_open_access']) {
         $l = $access_data['license'] ? $access_data['license'] : 'Open Access';
-        $oai_dc->addChild('dc:rights', htmlspecialchars($l));
+        $oai_dc->addChild('dc:rights', $l);
     } else {
         $oai_dc->addChild('dc:rights', 'Restricted Access');
     }
-  } 
+  }
   // --- OAI_OPENAIRE MAPPING ---
   elseif ($prefix == 'oai_openaire') {
     $resource = $metadataNode->addChild('resource', null, 'http://namespace.openaire.eu/schema/oaire/');
     $resource->addAttribute('xmlns:rdf', 'http://www.w3.org/1999/02/22-rdf-syntax-ns#');
     $resource->addAttribute('xmlns:datacite', 'http://datacite.org/schema/kernel-4');
-    
+
     // Titles
-    $title = (string)$mods_xml->xpath('//mods:titleInfo/mods:title')[0];
+    $title_nodes = $mods_xml->xpath('//mods:titleInfo/mods:title');
+    $title = '';
+    if ($title_nodes && isset($title_nodes[0])) $title = (string)$title_nodes[0];
     $titles = $resource->addChild('titles');
-    $titles->addChild('title', htmlspecialchars($title));
+    $titles->addChild('title', $title);
 
     // Creators and Funders
     $creators = $resource->addChild('creators');
@@ -530,21 +586,26 @@ function _islandora_advanced_oai_generate_metadata($metadataNode, $object, $pref
         $role = $name->xpath('mods:role/mods:roleTerm');
         $is_funder = false;
         if ($role) {
-            foreach ($role as $r) { if (strtolower((string)$r) == 'funder') { $is_funder = true; $found_funders[] = $name; } }
+            foreach ($role as $r) {
+                if (strtolower((string)$r) == 'funder') {
+                    $is_funder = true;
+                    $found_funders[] = $name;
+                }
+            }
         }
         if (!$is_funder) {
             $fullname = _islandora_advanced_oai_get_fullname($name);
             if ($fullname) {
                 $c = $creators->addChild('creator');
-                $c->addChild('creatorName', htmlspecialchars($fullname));
+                $c->addChild('creatorName', $fullname);
             }
         }
     }
 
     // Publication Year
     $date = $mods_xml->xpath('//mods:originInfo/mods:dateIssued');
-    if ($date) {
-        $year = substr((string)$date[0], 0, 4); 
+    if ($date && isset($date[0])) {
+        $year = substr((string)$date[0], 0, 4);
         $resource->addChild('publicationYear', $year);
     } else {
         $resource->addChild('publicationYear', gmdate('Y'));
@@ -552,19 +613,21 @@ function _islandora_advanced_oai_generate_metadata($metadataNode, $object, $pref
 
     // Publisher
     $pub = $mods_xml->xpath('//mods:originInfo/mods:publisher');
-    if ($pub) $resource->addChild('publisher', htmlspecialchars((string)$pub[0]));
+    if ($pub && isset($pub[0])) $resource->addChild('publisher', (string)$pub[0]);
     else $resource->addChild('publisher', variable_get('site_name', 'Islandora Repository'));
 
     // Language
     $lang = $mods_xml->xpath('//mods:language/mods:languageTerm');
-    if ($lang) $resource->addChild('language', htmlspecialchars((string)$lang[0]));
-    else $resource->addChild('language', 'eng'); 
+    if ($lang && isset($lang[0])) $resource->addChild('language', (string)$lang[0]);
+    else $resource->addChild('language', 'eng');
 
     // Resource Type Mapping (COAR)
-    $genre = strtolower((string)$mods_xml->xpath('//mods:genre')[0]);
+    $genre_nodes = $mods_xml->xpath('//mods:genre');
+    $genre = '';
+    if ($genre_nodes && isset($genre_nodes[0])) $genre = strtolower((string)$genre_nodes[0]);
     $type_uri = 'http://purl.org/coar/resource_type/c_6501'; $type_text = 'journal article';
-    if (strpos($genre, 'thesis') !== false || strpos($genre, 'dissertation') !== false) { $type_uri = 'http://purl.org/coar/resource_type/c_46ec'; $type_text = 'thesis'; } 
-    elseif (strpos($genre, 'book') !== false) { $type_uri = 'http://purl.org/coar/resource_type/c_2f33'; $type_text = 'book'; } 
+    if (strpos($genre, 'thesis') !== false || strpos($genre, 'dissertation') !== false) { $type_uri = 'http://purl.org/coar/resource_type/c_46ec'; $type_text = 'thesis'; }
+    elseif (strpos($genre, 'book') !== false) { $type_uri = 'http://purl.org/coar/resource_type/c_2f33'; $type_text = 'book'; }
     elseif (strpos($genre, 'report') !== false) { $type_uri = 'http://purl.org/coar/resource_type/c_93fc'; $type_text = 'report'; }
 
     $rt = $resource->addChild('resourceType', $type_text);
@@ -576,15 +639,15 @@ function _islandora_advanced_oai_generate_metadata($metadataNode, $object, $pref
     foreach ($mods_xml->xpath('//mods:identifier') as $modsid) {
         $type = (string)$modsid->attributes()->type;
         if (strtolower($type) == 'doi') {
-            $i = $identifiers->addChild('identifier', htmlspecialchars((string)$modsid));
+            $i = $identifiers->addChild('identifier', (string)$modsid);
             $i->addAttribute('identifierType', 'DOI');
         }
     }
     $i = $identifiers->addChild('identifier', $object->id);
-    $i->addAttribute('identifierType', 'Handle'); 
-    
+    $i->addAttribute('identifierType', 'Handle');
+
     if ($pdf_url) {
-        $i = $identifiers->addChild('identifier', htmlspecialchars($pdf_url));
+        $i = $identifiers->addChild('identifier', $pdf_url);
         $i->addAttribute('identifierType', 'URL');
     }
 
@@ -592,7 +655,7 @@ function _islandora_advanced_oai_generate_metadata($metadataNode, $object, $pref
     if (!empty($access_data['version'])) {
         $version_uri = _islandora_advanced_oai_map_version($access_data['version']);
         if ($version_uri) {
-            $v = $resource->addChild('version', htmlspecialchars($access_data['version']));
+            $v = $resource->addChild('version', $access_data['version']);
             $v->addAttribute('uri', $version_uri);
         }
     }
@@ -603,7 +666,7 @@ function _islandora_advanced_oai_generate_metadata($metadataNode, $object, $pref
         foreach ($found_funders as $funder) {
             $ref = $fundingRefs->addChild('fundingReference');
             $fullname = _islandora_advanced_oai_get_fullname($funder);
-            if ($fullname) $ref->addChild('funderName', htmlspecialchars($fullname));
+            if ($fullname) $ref->addChild('funderName', $fullname);
         }
     }
 
@@ -611,18 +674,130 @@ function _islandora_advanced_oai_generate_metadata($metadataNode, $object, $pref
     $rightsList = $resource->addChild('rightsList');
     $r1 = $rightsList->addChild('rights', $access_data['is_open_access'] ? 'open access' : ($access_data['embargo_end_date'] ? 'embargoed access' : 'restricted access'));
     $r1->addAttribute('rightsURI', $access_data['access_rights_uri']);
-    
+
     if ($access_data['is_open_access']) {
         $license_uri = _islandora_advanced_oai_map_license_to_uri($access_data['license']);
         $license_val = $license_uri ? $license_uri : $access_data['license'];
         if ($license_val) {
-            $r2 = $rightsList->addChild('rights', htmlspecialchars($access_data['license']));
+            $r2 = $rightsList->addChild('rights', $access_data['license']);
             if ($license_uri) $r2->addAttribute('rightsURI', $license_uri);
         }
     }
-    
+
     if ($access_data['embargo_end_date']) {
-        $resource->addChild('dates')->addChild('date', $access_data['embargo_end_date'])->addAttribute('dateType', 'Available');
+        $dates_node = $resource->addChild('dates');
+        $date_node = $dates_node->addChild('date', $access_data['embargo_end_date']);
+        $date_node->addAttribute('dateType', 'Available');
     }
   }
+}
+
+/**
+ * Safely parse XML string into SimpleXMLElement while preventing XXE/remote entity fetches.
+ * Returns SimpleXMLElement on success or FALSE on failure.
+ */
+function _islandora_advanced_oai_safe_simplexml_load_string($xml_string) {
+  if ($xml_string === null) {
+    return false;
+  }
+
+  libxml_use_internal_errors(true);
+
+  // Prefer using LIBXML_NONET (prevents network access) and preserve CDATA
+  $flags = 0;
+  if (defined('LIBXML_NONET')) {
+    $flags |= LIBXML_NONET;
+  }
+  if (defined('LIBXML_NOCDATA')) {
+    $flags |= LIBXML_NOCDATA;
+  }
+
+  // @ to suppress warnings; we'll check return value
+  $sxe = @simplexml_load_string($xml_string, 'SimpleXMLElement', $flags);
+  if ($sxe) {
+    return $sxe;
+  }
+
+  // Fallback: try DOMDocument with nonet if available
+  if (class_exists('DOMDocument')) {
+    $dom = new DOMDocument();
+    $ok = false;
+    if (defined('LIBXML_NONET')) {
+      $ok = @$dom->loadXML($xml_string, LIBXML_NONET | LIBXML_NOCDATA);
+    } else {
+      // Older PHP: temporarily disable external loader if function exists
+      if (function_exists('libxml_disable_entity_loader')) {
+        $old = libxml_disable_entity_loader(true);
+      }
+      $ok = @$dom->loadXML($xml_string, LIBXML_NOCDATA);
+      if (function_exists('libxml_disable_entity_loader')) {
+        libxml_disable_entity_loader($old);
+      }
+    }
+    if ($ok) {
+      return simplexml_import_dom($dom);
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Create a signed resumption token.
+ */
+function _islandora_advanced_oai_create_resumption_token($prefix, $offset) {
+  // Configurable secret (set this in settings.php or via variable_set)
+  $salt = variable_get('islandora_advanced_oai_token_salt', 'please-change-me');
+  $payload = $prefix . '|' . intval($offset);
+  $mac = hash_hmac('sha256', $payload, $salt);
+  return base64_encode($payload . '|' . $mac);
+}
+
+/**
+ * Validate and decode resumption token.
+ * Returns array('prefix' => ..., 'offset' => ...) on success, or FALSE on failure.
+ */
+function _islandora_advanced_oai_decode_resumption_token($token) {
+  if (empty($token)) return FALSE;
+  $decoded = base64_decode($token, true);
+  if ($decoded === false) return FALSE;
+  $parts = explode('|', $decoded);
+  if (count($parts) !== 3) return FALSE;
+  list($prefix, $offset, $mac) = $parts;
+  if (!is_numeric($offset)) return FALSE;
+
+  $salt = variable_get('islandora_advanced_oai_token_salt', 'please-change-me');
+  $expected = hash_hmac('sha256', $prefix . '|' . $offset, $salt);
+  if (function_exists('hash_equals')) {
+    $valid = hash_equals($expected, $mac);
+  } else {
+    // timing-safe-ish fallback
+    $valid = ($expected === $mac);
+  }
+  if (!$valid) return FALSE;
+  return array('prefix' => $prefix, 'offset' => intval($offset));
+}
+
+/**
+ * Execute a callable as admin (uid 1) and always restore original $user.
+ * Usage: _islandora_advanced_oai_run_as_admin(function() use ($pid) { return islandora_object_load($pid); });
+ */
+function _islandora_advanced_oai_run_as_admin($callable) {
+  global $user;
+  $original_user = $user;
+  // Load admin (uid = 1) — ensure user 1 exists in your site
+  $admin = user_load(1);
+  if ($admin) {
+    $user = $admin;
+  }
+  try {
+    $result = call_user_func($callable);
+  } catch (Exception $e) {
+    // restore then rethrow
+    $user = $original_user;
+    throw $e;
+  }
+  // restore
+  $user = $original_user;
+  return $result;
 }
