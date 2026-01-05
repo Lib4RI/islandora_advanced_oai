@@ -1,16 +1,16 @@
 <?php
 
 /**
- * @file
- * Implements a custom OAI-PMH interface for Islandora 7.
+ * @file islandora_advanced_oai.module
+ * Provides an advanced OAI-PMH data provider for Islandora 7.
  *
- * Key Features:
- * - Direct HTTP Solr querying (bypassing internal Drupal filters).
- * - Hybrid Data Fetching: Metadata from Solr (speed) + Rights from Fedora (precision).
- * - Full OAI-PMH paging support via resumptionTokens.
- * - OpenAIRE v4.0 Compliance (Funding, DOIs, Resource Types).
- * - Unpaywall Optimization (Direct PDF links, Versioning, Embargo handling).
- * - Security hardening (XXE protection, Admin Impersonation, No-Cache on error).
+ * Features:
+ * - Direct Solr querying for performance (bypasses Drupal's internal Solr module).
+ * - Hybrid data fetching: Solr for metadata (speed), Fedora for rights (precision).
+ * - Full OAI-PMH paging with HMAC-signed resumptionTokens for security.
+ * - OpenAIRE v4.0 compliance (funding, DOIs, resource types).
+ * - Unpaywall optimization (direct PDF links, versioning, embargo handling).
+ * - Security hardening (XXE protection, admin impersonation, no-cache on error).
  */
 
 // --- CONFIGURATION ---
@@ -28,7 +28,7 @@ function islandora_advanced_oai_menu() {
   $items['advanced-oai'] = array(
     'title' => 'Advanced OAI-PMH Provider',
     'page callback' => 'islandora_advanced_oai_request_handler',
-    'access callback' => TRUE, // Endpoint must be public
+    'access arguments' => array('access advanced oai-pmh provider'), // Endpoint must be public
     'type' => MENU_CALLBACK,
   );
   return $items;
@@ -36,7 +36,7 @@ function islandora_advanced_oai_menu() {
 
 /**
  * Main Request Handler.
- * Dispatches OAI verbs, handles caching, and manages security settings.
+ * Dispatches OAI verbs, handles caching, and manages security.
  */
 function islandora_advanced_oai_request_handler() {
   drupal_add_http_header('Content-Type', 'text/xml; charset=utf-8');
@@ -160,6 +160,12 @@ function _islandora_advanced_oai_handle_list_formats($xml) {
   $openaire->addChild('metadataPrefix', 'oai_openaire');
   $openaire->addChild('schema', 'https://www.openaire.eu/schema/repo-lit/4.0/openaire.xsd');
   $openaire->addChild('metadataNamespace', 'http://namespace.openaire.eu/schema/oaire/');
+
+  // MODS
+  $mods = $formats->addChild('metadataFormat');
+  $mods->addChild('metadataPrefix', 'mods');
+  $mods->addChild('schema', 'http://www.loc.gov/standards/mods/v3/mods-3-7.xsd');
+  $mods->addChild('metadataNamespace', 'http://www.loc.gov/mods/v3');
 }
 
 /**
@@ -559,60 +565,109 @@ function _islandora_advanced_oai_generate_metadata($metadataNode, $object, $solr
 
   // --- OAI_DC FORMAT ---
   if ($prefix == 'oai_dc') {
+    // KORREKTUR: Keine manuellen xmlns Attribute hinzufügen!
+    // SimpleXML macht das automatisch, wenn wir Kinder mit Namespace hinzufügen.
     $oai_dc = $metadataNode->addChild('oai_dc:dc', null, 'http://www.openarchives.org/OAI/2.0/oai_dc/');
-    $oai_dc->addAttribute('xmlns:oai_dc', 'http://www.openarchives.org/OAI/2.0/oai_dc/');
-    $oai_dc->addAttribute('xmlns:dc', 'http://purl.org/dc/elements/1.1/');
-    $oai_dc->addAttribute('xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-instance');
-    $oai_dc->addAttribute('xsi:schemaLocation', 'http://www.openarchives.org/OAI/2.0/oai_dc/ http://www.openarchives.org/OAI/2.0/oai_dc.xsd');
+
+    // Nur schemaLocation benötigt das XSI Namespace Argument im addAttribute Aufruf
+    $oai_dc->addAttribute('xsi:schemaLocation',
+        'http://www.openarchives.org/OAI/2.0/oai_dc/ http://www.openarchives.org/OAI/2.0/oai_dc.xsd',
+        'http://www.w3.org/2001/XMLSchema-instance');
+
+    $dc_ns = 'http://purl.org/dc/elements/1.1/';
 
     if ($use_solr) {
-        // Fast path: Use Solr data
-        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['title']) as $v) $oai_dc->addChild('dc:title', htmlspecialchars($v));
-        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['creator']) as $v) $oai_dc->addChild('dc:creator', htmlspecialchars($v));
-        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['subject']) as $v) $oai_dc->addChild('dc:subject', htmlspecialchars($v));
-        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['description']) as $v) $oai_dc->addChild('dc:description', htmlspecialchars($v));
-        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['publisher']) as $v) $oai_dc->addChild('dc:publisher', htmlspecialchars($v));
-        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['contributor']) as $v) $oai_dc->addChild('dc:contributor', htmlspecialchars($v));
-        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['date']) as $v) $oai_dc->addChild('dc:date', htmlspecialchars($v));
-        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['type']) as $v) $oai_dc->addChild('dc:type', htmlspecialchars($v));
-        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['format']) as $v) $oai_dc->addChild('dc:format', htmlspecialchars($v));
-        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['identifier']) as $v) $oai_dc->addChild('dc:identifier', htmlspecialchars($v));
-        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['source']) as $v) $oai_dc->addChild('dc:source', htmlspecialchars($v));
-        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['language']) as $v) $oai_dc->addChild('dc:language', htmlspecialchars($v));
-        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['relation']) as $v) $oai_dc->addChild('dc:relation', htmlspecialchars($v));
-        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['coverage']) as $v) $oai_dc->addChild('dc:coverage', htmlspecialchars($v));
-        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['rights']) as $v) $oai_dc->addChild('dc:rights', htmlspecialchars($v));
+        // WICHTIG: Namespace URI ($dc_ns) muss bei jedem addChild angegeben werden!
+        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['title']) as $v)
+            $oai_dc->addChild('dc:title', htmlspecialchars($v), $dc_ns);
+
+        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['creator']) as $v)
+            $oai_dc->addChild('dc:creator', htmlspecialchars($v), $dc_ns);
+
+        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['subject']) as $v)
+            $oai_dc->addChild('dc:subject', htmlspecialchars($v), $dc_ns);
+
+        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['description']) as $v)
+            $oai_dc->addChild('dc:description', htmlspecialchars($v), $dc_ns);
+
+        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['publisher']) as $v)
+            $oai_dc->addChild('dc:publisher', htmlspecialchars($v), $dc_ns);
+
+        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['contributor']) as $v)
+            $oai_dc->addChild('dc:contributor', htmlspecialchars($v), $dc_ns);
+
+        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['date']) as $v)
+            $oai_dc->addChild('dc:date', htmlspecialchars($v), $dc_ns);
+
+        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['type']) as $v)
+            $oai_dc->addChild('dc:type', htmlspecialchars($v), $dc_ns);
+
+        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['format']) as $v)
+            $oai_dc->addChild('dc:format', htmlspecialchars($v), $dc_ns);
+
+        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['identifier']) as $v)
+            $oai_dc->addChild('dc:identifier', htmlspecialchars($v), $dc_ns);
+
+        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['source']) as $v)
+            $oai_dc->addChild('dc:source', htmlspecialchars($v), $dc_ns);
+
+        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['language']) as $v)
+            $oai_dc->addChild('dc:language', htmlspecialchars($v), $dc_ns);
+
+        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['relation']) as $v)
+            $oai_dc->addChild('dc:relation', htmlspecialchars($v), $dc_ns);
+
+        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['coverage']) as $v)
+            $oai_dc->addChild('dc:coverage', htmlspecialchars($v), $dc_ns);
+
+        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['rights']) as $v)
+            $oai_dc->addChild('dc:rights', htmlspecialchars($v), $dc_ns);
+
     } else {
-        // Slow path: Parse MODS (Full mapping)
-        foreach ($mods_xml->xpath('//mods:titleInfo/mods:title') as $title) $oai_dc->addChild('dc:title', htmlspecialchars((string)$title));
+        // Fallback MODS (Auch hier Namespace hinzufügen)
+        foreach ($mods_xml->xpath('//mods:titleInfo/mods:title') as $title)
+            $oai_dc->addChild('dc:title', htmlspecialchars((string)$title), $dc_ns);
+
         foreach ($mods_xml->xpath('//mods:name') as $name) {
             $fn = _islandora_advanced_oai_get_mods_fullname($name);
-            if ($fn) $oai_dc->addChild('dc:creator', htmlspecialchars($fn));
+            if ($fn) $oai_dc->addChild('dc:creator', htmlspecialchars($fn), $dc_ns);
         }
-        $d = $mods_xml->xpath('//mods:originInfo/mods:dateIssued'); if($d) $oai_dc->addChild('dc:date', htmlspecialchars($d[0]));
-        foreach ($mods_xml->xpath('//mods:subject/mods:topic') as $subject) $oai_dc->addChild('dc:subject', htmlspecialchars((string)$subject));
-        foreach ($mods_xml->xpath('//mods:abstract') as $desc) $oai_dc->addChild('dc:description', htmlspecialchars((string)$desc));
-        foreach ($mods_xml->xpath('//mods:originInfo/mods:publisher') as $pub) $oai_dc->addChild('dc:publisher', htmlspecialchars((string)$pub));
-        foreach ($mods_xml->xpath('//mods:genre') as $type) $oai_dc->addChild('dc:type', htmlspecialchars((string)$type));
-        foreach ($mods_xml->xpath('//mods:physicalDescription/mods:internetMediaType') as $fmt) $oai_dc->addChild('dc:format', htmlspecialchars((string)$fmt));
-        foreach ($mods_xml->xpath('//mods:identifier') as $id) $oai_dc->addChild('dc:identifier', htmlspecialchars((string)$id));
-        foreach ($mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:titleInfo/mods:title') as $src) $oai_dc->addChild('dc:source', htmlspecialchars((string)$src));
-        foreach ($mods_xml->xpath('//mods:language/mods:languageTerm') as $lang) $oai_dc->addChild('dc:language', htmlspecialchars((string)$lang));
-        foreach ($mods_xml->xpath('//mods:subject/mods:geographic') as $cov) $oai_dc->addChild('dc:coverage', htmlspecialchars((string)$cov));
-        foreach ($mods_xml->xpath('//mods:subject/mods:temporal') as $cov) $oai_dc->addChild('dc:coverage', htmlspecialchars((string)$cov));
-        foreach ($mods_xml->xpath('//mods:accessCondition') as $rights) $oai_dc->addChild('dc:rights', htmlspecialchars((string)$rights));
-        foreach ($mods_xml->xpath('//mods:relatedItem[not(@type="host")]/mods:titleInfo/mods:title') as $rel) $oai_dc->addChild('dc:relation', htmlspecialchars((string)$rel));
+        $d = $mods_xml->xpath('//mods:originInfo/mods:dateIssued');
+        if($d) $oai_dc->addChild('dc:date', htmlspecialchars($d[0]), $dc_ns);
+
+        foreach ($mods_xml->xpath('//mods:subject/mods:topic') as $subject)
+            $oai_dc->addChild('dc:subject', htmlspecialchars((string)$subject), $dc_ns);
+        foreach ($mods_xml->xpath('//mods:abstract') as $desc)
+            $oai_dc->addChild('dc:description', htmlspecialchars((string)$desc), $dc_ns);
+        foreach ($mods_xml->xpath('//mods:originInfo/mods:publisher') as $pub)
+            $oai_dc->addChild('dc:publisher', htmlspecialchars((string)$pub), $dc_ns);
+        foreach ($mods_xml->xpath('//mods:genre') as $type)
+            $oai_dc->addChild('dc:type', htmlspecialchars((string)$type), $dc_ns);
+        foreach ($mods_xml->xpath('//mods:physicalDescription/mods:internetMediaType') as $fmt)
+            $oai_dc->addChild('dc:format', htmlspecialchars((string)$fmt), $dc_ns);
+        foreach ($mods_xml->xpath('//mods:identifier') as $id)
+            $oai_dc->addChild('dc:identifier', htmlspecialchars((string)$id), $dc_ns);
+        foreach ($mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:titleInfo/mods:title') as $src)
+            $oai_dc->addChild('dc:source', htmlspecialchars((string)$src), $dc_ns);
+        foreach ($mods_xml->xpath('//mods:language/mods:languageTerm') as $lang)
+            $oai_dc->addChild('dc:language', htmlspecialchars((string)$lang), $dc_ns);
+        foreach ($mods_xml->xpath('//mods:subject/mods:geographic') as $cov)
+            $oai_dc->addChild('dc:coverage', htmlspecialchars((string)$cov), $dc_ns);
+        foreach ($mods_xml->xpath('//mods:subject/mods:temporal') as $cov)
+            $oai_dc->addChild('dc:coverage', htmlspecialchars((string)$cov), $dc_ns);
+        foreach ($mods_xml->xpath('//mods:accessCondition') as $rights)
+            $oai_dc->addChild('dc:rights', htmlspecialchars((string)$rights), $dc_ns);
+        foreach ($mods_xml->xpath('//mods:relatedItem[not(@type="host")]/mods:titleInfo/mods:title') as $rel)
+            $oai_dc->addChild('dc:relation', htmlspecialchars((string)$rel), $dc_ns);
     }
 
-    // Add PDF Link
-    if ($pdf_url) $oai_dc->addChild('dc:identifier', htmlspecialchars($pdf_url));
+    if ($pdf_url) $oai_dc->addChild('dc:identifier', htmlspecialchars($pdf_url), $dc_ns);
 
-    // Calculated Rights
     if ($access_data['is_open_access']) {
         $l = $access_data['license'] ? $access_data['license'] : 'Open Access';
-        $oai_dc->addChild('dc:rights', htmlspecialchars($l));
+        $oai_dc->addChild('dc:rights', htmlspecialchars($l), $dc_ns);
     } else {
-        $oai_dc->addChild('dc:rights', 'Restricted Access');
+        $oai_dc->addChild('dc:rights', 'Restricted Access', $dc_ns);
     }
   }
 
@@ -776,5 +831,18 @@ function _islandora_advanced_oai_generate_metadata($metadataNode, $object, $solr
     if ($access_data['embargo_end_date']) {
         $resource->addChild('dates')->addChild('date', $access_data['embargo_end_date'])->addAttribute('dateType', 'Available');
     }
+  }
+
+  // --- MODS FORMAT ---
+  elseif ($prefix == 'mods') {
+    $dom_metadata = dom_import_simplexml($metadataNode);
+    $dom_mods = new DOMDocument();
+    // Suppress errors for malformed XML in datastream, though it should be valid
+    $prev = libxml_use_internal_errors(true);
+    if ($dom_mods->loadXML($mods_content)) {
+      $node = $dom_metadata->ownerDocument->importNode($dom_mods->documentElement, true);
+      $dom_metadata->appendChild($node);
+    }
+    libxml_use_internal_errors($prev);
   }
 }
