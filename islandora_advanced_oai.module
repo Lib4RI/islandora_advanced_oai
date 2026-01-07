@@ -28,7 +28,7 @@ function islandora_advanced_oai_menu() {
   $items['advanced-oai'] = array(
     'title' => 'Advanced OAI-PMH Provider',
     'page callback' => 'islandora_advanced_oai_request_handler',
-    'access arguments' => array('access advanced oai-pmh provider'), // Endpoint must be public
+    'access arguments' => array('access content'), // Endpoint must be public
     'type' => MENU_CALLBACK,
   );
   return $items;
@@ -566,7 +566,7 @@ function _islandora_advanced_oai_generate_metadata($metadataNode, $object, $solr
   // --- OAI_DC FORMAT ---
   if ($prefix == 'oai_dc') {
     // KORREKTUR: Keine manuellen xmlns Attribute hinzufügen!
-    // SimpleXML macht das automatisch, wenn wir Kinder mit Namespace hinzufügen.
+    // SimpleXML macht das automatisch, wenn wir Kinder mit Namespace hinzufügen. (Korrektur: doch nötig für root element)
     $oai_dc = $metadataNode->addChild('oai_dc:dc', null, 'http://www.openarchives.org/OAI/2.0/oai_dc/');
 
     // Nur schemaLocation benötigt das XSI Namespace Argument im addAttribute Aufruf
