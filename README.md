@@ -1,62 +1,73 @@
-Islandora Advanced OAI-PMH Provider A high-performance, compliant, and robust OAI-PMH interface for Islandora 7 (Drupal 7) repositories. This module was designed to overcome specific limitations of the standard Islandora OAI provider regarding performance, access rights calculation (Unpaywall/Open Access), and OpenAIRE v4.0 compliance. Table of Contents
+# Islandora Advanced OAI-PMH Provider
 
-    Key Features
-    Architecture
-    Installation
-    Configuration
-    Usage
-    Troubleshooting
-    License Key Features
+A custom OAI-PMH interface for Islandora 7 (Drupal 7) repositories, designed to meet modern harvesting requirements like OpenAIRE v4.0 and Unpaywall.
 
-    Hybrid Data Fetching (Performance & Precision) Standard OAI providers often struggle with the trade-off between speed (Solr) and data accuracy (Fedora). This module uses a hybrid approach:
+## Features
 
-    Metadata (Speed): Static fields like Title, Creator, Date, Publisher, and Descriptions are fetched directly from the Solr Index. This avoids parsing huge MODS XML files for thousands of records, resulting in significantly lower CPU usage.
-    Access Rights (Precision): Complex logic regarding Open Access status, Embargoes, and Versioning (Submitted vs. Accepted vs. Published) is calculated in real-time by inspecting the Fedora Object (RELS-INT, RELS-EXT). This ensures Unpaywall always gets the correct link to the open full-text version.
+*   **High Performance:** Uses direct Solr queries to bypass Drupal's internal overhead for `ListRecords` and `ListIdentifiers`.
+*   **Hybrid Metadata Fetching:**
+    *   Fetches descriptive metadata from Solr for speed.
+    *   Fetches rights and file information from Fedora (RELS-INT/RELS-EXT) for precision.
+*   **OpenAIRE v4.0 Compliance:**
+    *   Supports `metadataPrefix=oai_openaire`.
+    *   Maps funding information, DOIs, and resource types to the OpenAIRE schema.
+    *   Handles "Access Rights" (Open Access, Embargoed, Restricted) based on file availability.
+*   **Unpaywall Optimization:**
+    *   Exposes direct links to PDF datastreams.
+    *   Distinguishes between "Published Version" (VoR), "Accepted Manuscript" (AM), etc.
+    *   Correctly handles embargo dates.
+*   **MODS Support:**
+    *   Supports `metadataPrefix=mods` to return the raw MODS XML datastream.
+*   **Security:**
+    *   HMAC-signed `resumptionTokens` to prevent tampering.
+    *   XXE protection.
+    *   Admin impersonation for safe object loading.
 
-    Direct Solr HTTP Mode To bypass potential internal filtering issues where Drupal's IslandoraSolrQueryProcessor might return 0 results due to strict XACML policies for anonymous users, this module implements a Direct HTTP Solr Client.
+## Installation
 
-    It sends raw queries directly to the Solr core (e.g., http://localhost:8080/solr).
-    It uses specific Filter Queries (fq) to target content models (e.g., ir:citationCModel).
+1.  Clone this module into your Drupal `sites/all/modules` directory.
+2.  Enable the module via `drush en islandora_advanced_oai` or the admin interface.
+3.  Configure the Solr connection in `islandora_advanced_oai.module` (constants at the top of the file):
+    *   `ISLANDORA_ADVANCED_OAI_SOLR_URL`
+    *   `ISLANDORA_ADVANCED_OAI_SOLR_CORE`
 
-    Unpaywall & Open Access Optimization
+## Usage
 
-    Smart Versioning: Automatically detects multiple PDF datastreams (PDF, PDF2...). It prioritizes the Published Version but falls back to the Accepted Manuscript if the former is restricted and the latter is open.
-    Direct Links: Exposes the direct download URL of the specific open datastream in dc:identifier (Dublin Core) and datacite:identifier (OpenAIRE), allowing Unpaywall to index the full text.
-    Embargo Handling: Calculates whether an embargo date has passed based on the server time and RELS-INT metadata.
+The OAI-PMH endpoint is available at:
+`http://your-site.com/advanced-oai`
 
-    OpenAIRE v4.0 Compliance
+### Supported Verbs
 
-    Full support for OpenAIRE Guidelines v4.0.
-    Maps internal vocabularies to COAR resource types (e.g., journal article, thesis, book part).
-    Exports funding references and project information.
-    Includes rightsList with specific URIs for access rights and licenses (CC BY, etc.).
+*   `Identify`
+*   `ListMetadataFormats`
+*   `ListRecords`
+*   `GetRecord`
+*   `ListIdentifiers` (Not explicitly implemented, handled via `ListRecords` logic or standard errors)
 
-    Security & Robustness
+### Supported Metadata Formats
 
-    HMAC Signed Tokens: resumptionTokens are signed using the site's private key to prevent tampering or DoS attacks via offset manipulation.
-    Admin Impersonation: The OAI endpoint temporarily switches to the super-user (User 1) context during read-only operations to ensure all metadata can be read from Fedora, regardless of anonymous user restrictions.
-    XXE Protection: XML entity loaders are explicitly disabled to prevent injection attacks.
-    Stale Cache Prevention: Error responses (e.g., "No records match") are never cached to facilitate easier debugging. Installation
+*   **oai_dc**: Standard Dublin Core.
+*   **oai_openaire**: OpenAIRE v4.0 compliant XML.
+*   **mods**: Raw MODS XML from the object's datastream.
 
-    Clone this repository into your Drupal modules directory: cd /var/www/html/sites/all/modules git clone https://github.com/YOUR_ORG/islandora_advanced_oai.git
+## Configuration
 
-    Enable the module: drush en islandora_advanced_oai
+### Solr Mapping
+The module uses a hardcoded mapping array in `_islandora_advanced_oai_handle_list_records` to map Solr fields to metadata elements. You may need to adjust these keys to match your GSearch `schema.xml`.
 
-Configuration
+```php
+$solr_map = array(
+    'title'       => 'fgs_label_s',
+    'creator'     => 'dc.creator',
+    // ...
+);
+```
 
-    Solr Connection Open the .module file and locate the configuration constant at the top. You must define the internal URL to your Solr core. This allows the module to bypass internal Drupal filters. // e.g., inside islandora_advanced_oai.module define('EAWAG_OAI17_SOLR_URL', 'http://localhost:8080/solr'); define('EAWAG_OAI17_SOLR_CORE', 'collection1');
+### Access Rights Logic
+The module determines access rights by inspecting the `RELS-INT` datastream of the object. It looks for specific predicates (e.g., `lib4ridora-multi-embargo-availability`) to determine if a PDF is "public", "embargoed", or "restricted".
 
-    Solr Field Mapping In the function _handle_list_records, check the $solr_map array. Ensure the Solr fields match your GSearch configuration (e.g., MODS_abstract_ms vs dc.description). $solr_map = array( 'title' => 'fgs_label_s', 'creator' => 'dc.creator', // or MODS_name_personal_namePart_ms 'date' => 'MODS_originInfo_dateIssued_s', // ... );
+## Requirements
 
-Usage The OAI endpoint is available at: https://your-repository.org/eawag-oai17 Examples
-
-    Identify: ?verb=Identify
-    List Records (Dublin Core): ?verb=ListRecords&metadataPrefix=oai_dc
-    List Records (OpenAIRE): ?verb=ListRecords&metadataPrefix=oai_openaire
-    Get Record: ?verb=GetRecord&identifier=eawag:12345&metadataPrefix=oai_dc Troubleshooting "noRecordsMatch" Error If you receive this error even though your repository has content:
-        Check the EAWAG_OAI17_SOLR_URL setting. The server must be able to reach Solr via HTTP/cURL.
-        Check the query filter in the code: RELS_EXT_hasModel_uri_ms:"info:fedora/ir:citationCModel". Does your repository use a different content model URI?
-        Clear the Drupal cache (drush cc all) to ensure no old error responses are served. Missing Metadata Fields If fields like "Publisher" or "Description" are missing in ListRecords:
-        Verify the field names in your Solr index using the Solr Admin UI.
-        Update the $solr_map array in the module code to match your specific index schema. License GPLv2 or later.
-
+*   Islandora 7.x
+*   PHP 5.3+
+*   Solr 4+
