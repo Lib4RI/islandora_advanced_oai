@@ -222,7 +222,7 @@ function _islandora_advanced_oai_handle_list_records($xml, $params) {
       'publisher'   => 'MODS_originInfo_publisher_ms',
       'contributor' => 'dc.contributor',
       'date'        => 'MODS_originInfo_dateIssued_s',
-      'type'        => 'MODS_genre_ms',
+      'type'        => 'MODS_genre_s',
       'format'      => 'dc.format',
       'identifier'  => 'MODS_identifier_ms',
       'source'      => 'mods_relatedItem_host_titleInfo_title_s',
