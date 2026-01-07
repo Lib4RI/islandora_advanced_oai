@@ -83,13 +83,19 @@ function islandora_advanced_oai_request_handler() {
         _islandora_advanced_oai_handle_identify($xml);
         break;
       case 'ListMetadataFormats':
-        _islandora_advanced_oai_handle_list_formats($xml);
+        _islandora_advanced_oai_handle_list_formats($xml, $params);
         break;
       case 'GetRecord':
         _islandora_advanced_oai_handle_get_record($xml, $params);
         break;
       case 'ListRecords':
         _islandora_advanced_oai_handle_list_records($xml, $params);
+        break;
+      case 'ListIdentifiers':
+        _islandora_advanced_oai_handle_list_identifiers($xml, $params);
+        break;
+      case 'ListSets':
+        _islandora_advanced_oai_handle_list_sets($xml, $params);
         break;
       default:
         $err = $xml->addChild('error', 'Invalid Verb');
@@ -141,12 +147,47 @@ function _islandora_advanced_oai_handle_identify($xml) {
   $identify->addChild('earliestDatestamp', '2000-01-01T00:00:00Z');
   $identify->addChild('deletedRecord', 'no');
   $identify->addChild('granularity', 'YYYY-MM-DDThh:mm:ssZ');
+
+  // Add description block with oai-identifier
+  $desc = $identify->addChild('description');
+  $oaiId = $desc->addChild('oai-identifier', null, 'http://www.openarchives.org/OAI/2.0/oai-identifier');
+  $oaiId->addAttribute('xmlns', 'http://www.openarchives.org/OAI/2.0/oai-identifier');
+  $oaiId->addAttribute('xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-instance');
+  $oaiId->addAttribute('xsi:schemaLocation', 'http://www.openarchives.org/OAI/2.0/oai-identifier http://www.openarchives.org/OAI/2.0/oai-identifier.xsd');
+
+  $oaiId->addChild('scheme', 'oai');
+  // Extract repository identifier from baseURL or site name, fallback to 'islandora'
+  $host = parse_url(url('advanced-oai', array('absolute' => TRUE)), PHP_URL_HOST);
+  $oaiId->addChild('repositoryIdentifier', $host);
+  $oaiId->addChild('delimiter', ':');
+  $oaiId->addChild('sampleIdentifier', 'oai:' . $host . ':islandora:1');
 }
 
 /**
  * OAI Verb: ListMetadataFormats
  */
-function _islandora_advanced_oai_handle_list_formats($xml) {
+function _islandora_advanced_oai_handle_list_formats($xml, $params) {
+  // If identifier is provided, check if it exists
+  if (isset($params['identifier'])) {
+      // Impersonate Admin to ensure we can load the object via Fedora API
+      global $user;
+      $original_user = $user;
+      $user = user_load(1);
+
+      try {
+          $object = islandora_object_load($params['identifier']);
+      } catch (Exception $e) {
+          $object = null;
+      }
+
+      $user = $original_user;
+
+      if (!$object) {
+          $xml->addChild('error', 'The object does not exist or access is denied.')->addAttribute('code', 'idDoesNotExist');
+          return;
+      }
+  }
+
   $formats = $xml->addChild('ListMetadataFormats');
 
   // Dublin Core
@@ -200,7 +241,201 @@ function _islandora_advanced_oai_handle_get_record($xml, $params) {
   _islandora_advanced_oai_build_header($record, $object->id, $object->lastModifiedDate);
 
   // Generate Metadata: Pass empty array for solr_doc to trigger MODS fallback parsing
+  // Check if the requested metadataPrefix is supported
+  $supported_prefixes = array('oai_dc', 'oai_openaire', 'mods');
+  if (!in_array($params['metadataPrefix'], $supported_prefixes)) {
+      $xml->addChild('error', 'The metadataPrefix is not supported.')->addAttribute('code', 'cannotDisseminateFormat');
+      return;
+  }
+
   _islandora_advanced_oai_generate_metadata($record->addChild('metadata'), $object, null, $params['metadataPrefix'], array());
+}
+
+/**
+ * OAI Verb: ListIdentifiers
+ * Uses Direct HTTP Solr Request for performance and robustness.
+ */
+function _islandora_advanced_oai_handle_list_identifiers($xml, $params) {
+  $batch_size = 50; // Records per page
+  $offset = 0;
+  $prefix = '';
+  $from = null;
+  $until = null;
+  $set = null;
+
+  // --- TOKEN HANDLING ---
+  if (isset($params['resumptionToken']) && !empty($params['resumptionToken'])) {
+      $token_raw = base64_decode($params['resumptionToken']);
+      $parts = explode('|', $token_raw);
+
+      // Expected format: prefix|offset|from|until|set|signature
+      if (count($parts) != 6) {
+          $xml->addChild('error', 'Invalid resumptionToken format.')->addAttribute('code', 'badResumptionToken');
+          return;
+      }
+
+      $prefix_candidate = $parts[0];
+      $offset_candidate = $parts[1];
+      $from_candidate = $parts[2];
+      $until_candidate = $parts[3];
+      $set_candidate = $parts[4];
+      $signature_provided = $parts[5];
+
+      // Verify signature to prevent tampering
+      $data_to_sign = $prefix_candidate . '|' . $offset_candidate . '|' . $from_candidate . '|' . $until_candidate . '|' . $set_candidate;
+      $expected_signature = drupal_hmac_base64($data_to_sign, drupal_get_private_key());
+
+      if ($signature_provided !== $expected_signature) {
+           $xml->addChild('error', 'The resumptionToken has been tampered with.')->addAttribute('code', 'badResumptionToken');
+           return;
+      }
+
+      $prefix = $prefix_candidate;
+      $offset = (int)$offset_candidate;
+      $from = ($from_candidate !== '') ? $from_candidate : null;
+      $until = ($until_candidate !== '') ? $until_candidate : null;
+      $set = ($set_candidate !== '') ? $set_candidate : null;
+  }
+  elseif (isset($params['metadataPrefix'])) {
+      $prefix = $params['metadataPrefix'];
+      $offset = 0;
+      $from = isset($params['from']) ? $params['from'] : null;
+      $until = isset($params['until']) ? $params['until'] : null;
+      $set = isset($params['set']) ? $params['set'] : null;
+  } else {
+      $xml->addChild('error', 'Missing metadataPrefix argument')->addAttribute('code', 'badArgument');
+      return;
+  }
+
+  // --- SOLR REQUEST ---
+  // Switch to Admin to ensure system connectivity
+  global $user;
+  $original_user = $user;
+  $user = user_load(1);
+
+  $solr_docs = array();
+  $total_count = 0;
+  $request_url = '';
+
+  try {
+      // Build the Direct HTTP Request
+      // We filter by Content Model (Citation/Publication)
+      $query_string = 'RELS_EXT_hasModel_uri_ms:"info:fedora/ir:citationCModel"';
+
+      // Date Filtering
+      if ($from || $until) {
+          $f = $from ? $from : '*';
+          $u = $until ? $until : '*';
+          $query_string .= ' AND fgs_lastModifiedDate_dt:[' . $f . ' TO ' . $u . ']';
+      }
+
+      // Set Filtering
+      if ($set) {
+          $query_string .= ' AND RELS_EXT_isMemberOfCollection_uri_ms:"info:fedora/' . str_replace('_', ':', $set) . '"';
+      }
+
+      // Construct field list (fl) from map to optimize performance
+      // Added RELS_EXT_isMemberOfCollection_uri_ms to fetch sets
+      $fl_fields = array('PID', 'fgs_lastModifiedDate_dt', 'RELS_EXT_isMemberOfCollection_uri_ms');
+      $fl_string = implode(',', array_unique($fl_fields));
+
+      $query_params = array(
+          'q' => $query_string,
+          'start' => $offset,
+          'rows' => $batch_size,
+          'sort' => 'PID asc', // Sort by PID for stable paging
+          'fl' => $fl_string,
+          'wt' => 'json'
+      );
+
+      // Construct full URL
+      $base = ISLANDORA_ADVANCED_OAI_SOLR_URL . '/' . ISLANDORA_ADVANCED_OAI_SOLR_CORE . '/select';
+      $request_url = url($base, array('query' => $query_params, 'absolute' => TRUE));
+
+      // Execute Request
+      $response = drupal_http_request($request_url);
+
+      if ($response->code == 200) {
+          $data = json_decode($response->data, true);
+          if (isset($data['response']['numFound'])) {
+              $total_count = (int)$data['response']['numFound'];
+              $solr_docs = $data['response']['docs'];
+          }
+      } else {
+          watchdog('islandora_advanced_oai', 'Solr HTTP Error @code: @msg', array('@code' => $response->code, '@msg' => $response->error), WATCHDOG_ERROR);
+          throw new Exception("Solr HTTP " . $response->code . ": " . $response->error);
+      }
+
+  } catch (Exception $e) {
+      $xml->addChild('error', 'Solr Request failed: ' . $e->getMessage() . ' [URL: ' . $request_url . ']')->addAttribute('code', 'noRecordsMatch');
+      $user = $original_user;
+      return;
+  }
+
+  // Handle No Results
+  if (empty($solr_docs)) {
+    $user = $original_user;
+    if ($offset == 0) {
+        $xml->addChild('error', 'No records found in Solr.')->addAttribute('code', 'noRecordsMatch');
+        return;
+    } else {
+        // End of list
+        $listNode = $xml->addChild('ListIdentifiers');
+        $tokenNode = $listNode->addChild('resumptionToken');
+        if ($total_count > 0) $tokenNode->addAttribute('completeListSize', $total_count);
+        $tokenNode->addAttribute('cursor', $offset);
+        return;
+    }
+  }
+
+  $listNode = $xml->addChild('ListIdentifiers');
+
+  // Process Solr Results
+  foreach ($solr_docs as $doc) {
+    $pid = $doc['PID'];
+    try {
+        // Determine Last Modified Date (Prefer Solr)
+        $last_mod = isset($doc['fgs_lastModifiedDate_dt']) ? new DateTime($doc['fgs_lastModifiedDate_dt']) : new DateTime();
+
+        // Extract sets from Solr doc
+        $sets = array();
+        if (isset($doc['RELS_EXT_isMemberOfCollection_uri_ms'])) {
+            $collections = $doc['RELS_EXT_isMemberOfCollection_uri_ms'];
+            if (!is_array($collections)) {
+                $collections = array($collections);
+            }
+            foreach ($collections as $col_uri) {
+                // Extract the PID part from info:fedora/PID
+                $parts = explode('/', $col_uri);
+                $set_spec = end($parts);
+                // Clean up setSpec (replace colons with underscores if needed, though OAI allows colons)
+                $sets[] = str_replace(':', '_', $set_spec);
+            }
+        }
+
+        _islandora_advanced_oai_build_header($listNode, $pid, $last_mod, $sets);
+    } catch (Exception $e) {
+        watchdog('islandora_advanced_oai', 'Error processing @pid: @msg', array('@pid' => $pid, '@msg' => $e->getMessage()), WATCHDOG_WARNING);
+    }
+  }
+
+  $user = $original_user; // Reset User
+
+  // --- TOKEN GENERATION ---
+  $next_offset = $offset + $batch_size;
+  $tokenNode = $listNode->addChild('resumptionToken');
+  $tokenNode->addAttribute('completeListSize', $total_count);
+  $tokenNode->addAttribute('cursor', $offset);
+
+  if ($next_offset < $total_count) {
+      // Create new signed token
+      $data_to_sign = $prefix . '|' . $next_offset . '|' . ($from ? $from : '') . '|' . ($until ? $until : '') . '|' . ($set ? $set : '');
+      $signature = drupal_hmac_base64($data_to_sign, drupal_get_private_key());
+      $tokenNode[0] = base64_encode($data_to_sign . '|' . $signature);
+  } else {
+      // Empty token = End of list
+      $tokenNode[0] = '';
+  }
 }
 
 /**
@@ -211,6 +446,9 @@ function _islandora_advanced_oai_handle_list_records($xml, $params) {
   $batch_size = 50; // Records per page
   $offset = 0;
   $prefix = '';
+  $from = null;
+  $until = null;
+  $set = null;
 
   // --- CONFIGURATION: SOLR FIELD MAPPING ---
   // Adjust these field names to match your GSearch schema!
@@ -237,18 +475,21 @@ function _islandora_advanced_oai_handle_list_records($xml, $params) {
       $token_raw = base64_decode($params['resumptionToken']);
       $parts = explode('|', $token_raw);
 
-      // Expected format: prefix|offset|signature
-      if (count($parts) != 3) {
+      // Expected format: prefix|offset|from|until|set|signature
+      if (count($parts) != 6) {
           $xml->addChild('error', 'Invalid resumptionToken format.')->addAttribute('code', 'badResumptionToken');
           return;
       }
 
       $prefix_candidate = $parts[0];
       $offset_candidate = $parts[1];
-      $signature_provided = $parts[2];
+      $from_candidate = $parts[2];
+      $until_candidate = $parts[3];
+      $set_candidate = $parts[4];
+      $signature_provided = $parts[5];
 
       // Verify signature to prevent tampering
-      $data_to_sign = $prefix_candidate . '|' . $offset_candidate;
+      $data_to_sign = $prefix_candidate . '|' . $offset_candidate . '|' . $from_candidate . '|' . $until_candidate . '|' . $set_candidate;
       $expected_signature = drupal_hmac_base64($data_to_sign, drupal_get_private_key());
 
       if ($signature_provided !== $expected_signature) {
@@ -258,10 +499,16 @@ function _islandora_advanced_oai_handle_list_records($xml, $params) {
 
       $prefix = $prefix_candidate;
       $offset = (int)$offset_candidate;
+      $from = ($from_candidate !== '') ? $from_candidate : null;
+      $until = ($until_candidate !== '') ? $until_candidate : null;
+      $set = ($set_candidate !== '') ? $set_candidate : null;
   }
   elseif (isset($params['metadataPrefix'])) {
       $prefix = $params['metadataPrefix'];
       $offset = 0;
+      $from = isset($params['from']) ? $params['from'] : null;
+      $until = isset($params['until']) ? $params['until'] : null;
+      $set = isset($params['set']) ? $params['set'] : null;
   } else {
       $xml->addChild('error', 'Missing metadataPrefix argument')->addAttribute('code', 'badArgument');
       return;
@@ -282,8 +529,21 @@ function _islandora_advanced_oai_handle_list_records($xml, $params) {
       // We filter by Content Model (Citation/Publication)
       $query_string = 'RELS_EXT_hasModel_uri_ms:"info:fedora/ir:citationCModel"';
 
+      // Date Filtering
+      if ($from || $until) {
+          $f = $from ? $from : '*';
+          $u = $until ? $until : '*';
+          $query_string .= ' AND fgs_lastModifiedDate_dt:[' . $f . ' TO ' . $u . ']';
+      }
+
+      // Set Filtering
+      if ($set) {
+          $query_string .= ' AND RELS_EXT_isMemberOfCollection_uri_ms:"info:fedora/' . str_replace('_', ':', $set) . '"';
+      }
+
       // Construct field list (fl) from map to optimize performance
-      $fl_fields = array('PID', 'fgs_lastModifiedDate_dt');
+      // Added RELS_EXT_isMemberOfCollection_uri_ms to fetch sets
+      $fl_fields = array('PID', 'fgs_lastModifiedDate_dt', 'RELS_EXT_isMemberOfCollection_uri_ms', 'mods_identifier_doi_mt', 'lib4ri_publisher_mt');
       foreach ($solr_map as $solr_field) {
           if (!empty($solr_field)) $fl_fields[] = $solr_field;
       }
@@ -351,7 +611,22 @@ function _islandora_advanced_oai_handle_list_records($xml, $params) {
 
           // Determine Last Modified Date (Prefer Solr, Fallback to Object)
           $last_mod = isset($doc['fgs_lastModifiedDate_dt']) ? new DateTime($doc['fgs_lastModifiedDate_dt']) : $object->lastModifiedDate;
-          _islandora_advanced_oai_build_header($record, $pid, $last_mod);
+
+          // Extract sets from Solr doc
+          $sets = array();
+          if (isset($doc['RELS_EXT_isMemberOfCollection_uri_ms'])) {
+              $collections = $doc['RELS_EXT_isMemberOfCollection_uri_ms'];
+              if (!is_array($collections)) {
+                  $collections = array($collections);
+              }
+              foreach ($collections as $col_uri) {
+                  $parts = explode('/', $col_uri);
+                  $set_spec = end($parts);
+                  $sets[] = str_replace(':', '_', $set_spec);
+              }
+          }
+
+          _islandora_advanced_oai_build_header($record, $pid, $last_mod, $sets);
 
           // Generate Metadata (Hybrid approach)
           _islandora_advanced_oai_generate_metadata($record->addChild('metadata'), $object, $doc, $prefix, $solr_map);
@@ -371,7 +646,7 @@ function _islandora_advanced_oai_handle_list_records($xml, $params) {
 
   if ($next_offset < $total_count) {
       // Create new signed token
-      $data_to_sign = $prefix . '|' . $next_offset;
+      $data_to_sign = $prefix . '|' . $next_offset . '|' . ($from ? $from : '') . '|' . ($until ? $until : '') . '|' . ($set ? $set : '');
       $signature = drupal_hmac_base64($data_to_sign, drupal_get_private_key());
       $tokenNode[0] = base64_encode($data_to_sign . '|' . $signature);
   } else {
@@ -381,13 +656,79 @@ function _islandora_advanced_oai_handle_list_records($xml, $params) {
 }
 
 /**
+ * OAI Verb: ListSets
+ * Lists all collections in the repository as OAI sets.
+ */
+function _islandora_advanced_oai_handle_list_sets($xml, $params) {
+    // ResumptionToken handling for ListSets is simplified here (no paging for sets in this basic implementation)
+    // If you have thousands of collections, you might need paging.
+    if (isset($params['resumptionToken'])) {
+        $xml->addChild('error', 'resumptionToken not supported for ListSets in this implementation')->addAttribute('code', 'badResumptionToken');
+        return;
+    }
+
+    $listSets = $xml->addChild('ListSets');
+
+    // Query Solr for all collections
+    // We look for objects with the collection content model
+    $query_string = 'RELS_EXT_hasModel_uri_ms:"info:fedora/islandora:collectionCModel"';
+    $fl_fields = array('PID', 'fgs_label_s', 'dc.description');
+    $fl_string = implode(',', $fl_fields);
+
+    $query_params = array(
+        'q' => $query_string,
+        'rows' => 1000, // Fetch up to 1000 collections
+        'fl' => $fl_string,
+        'wt' => 'json'
+    );
+
+    $base = ISLANDORA_ADVANCED_OAI_SOLR_URL . '/' . ISLANDORA_ADVANCED_OAI_SOLR_CORE . '/select';
+    $request_url = url($base, array('query' => $query_params, 'absolute' => TRUE));
+
+    try {
+        $response = drupal_http_request($request_url);
+        if ($response->code == 200) {
+            $data = json_decode($response->data, true);
+            if (isset($data['response']['docs'])) {
+                foreach ($data['response']['docs'] as $doc) {
+                    $set = $listSets->addChild('set');
+                    // Use PID as setSpec, replacing colon with underscore for safety (though colon is allowed)
+                    // Consistent with ListRecords logic
+                    $setSpec = str_replace(':', '_', $doc['PID']);
+                    $set->addChild('setSpec', htmlspecialchars($setSpec));
+
+                    $setName = isset($doc['fgs_label_s']) ? $doc['fgs_label_s'] : $doc['PID'];
+                    $set->addChild('setName', htmlspecialchars($setName));
+
+                    if (isset($doc['dc.description'])) {
+                        $desc = is_array($doc['dc.description']) ? $doc['dc.description'][0] : $doc['dc.description'];
+                        // Optional: Add setDescription container if needed, but OAI-PMH allows description inside set?
+                        // Actually, setDescription is a container for extensible metadata.
+                        // For simplicity, we often skip it or put dc inside.
+                        // Let's skip setDescription for now to keep it simple and valid.
+                    }
+                }
+            }
+        } else {
+             throw new Exception("Solr HTTP " . $response->code);
+        }
+    } catch (Exception $e) {
+        $xml->addChild('error', 'Could not retrieve sets: ' . $e->getMessage())->addAttribute('code', 'noSetHierarchy');
+    }
+}
+
+/**
  * Helper: Builds the OAI Header block.
  */
-function _islandora_advanced_oai_build_header($parent, $pid, $last_mod) {
+function _islandora_advanced_oai_build_header($parent, $pid, $last_mod, $sets = array()) {
   $header = ($parent->getName() == 'header') ? $parent : $parent->addChild('header');
   $header->addChild('identifier', $pid);
   if ($last_mod instanceof DateTime) $last_mod = $last_mod->format('Y-m-d\TH:i:s\Z');
   $header->addChild('datestamp', $last_mod);
+
+  foreach ($sets as $setSpec) {
+      $header->addChild('setSpec', htmlspecialchars($setSpec));
+  }
 }
 
 /**
@@ -569,7 +910,10 @@ function _islandora_advanced_oai_generate_metadata($metadataNode, $object, $solr
     // SimpleXML macht das automatisch, wenn wir Kinder mit Namespace hinzufügen. (Korrektur: doch nötig für root element)
     $oai_dc = $metadataNode->addChild('oai_dc:dc', null, 'http://www.openarchives.org/OAI/2.0/oai_dc/');
 
-    // Nur schemaLocation benötigt das XSI Namespace Argument im addAttribute Aufruf
+    // Explicitly add namespaces to ensure correct prefixes in output
+    $oai_dc->addAttribute('xmlns:oai_dc', 'http://www.openarchives.org/OAI/2.0/oai_dc/');
+    $oai_dc->addAttribute('xmlns:dc', 'http://purl.org/dc/elements/1.1/');
+    $oai_dc->addAttribute('xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-instance');
     $oai_dc->addAttribute('xsi:schemaLocation',
         'http://www.openarchives.org/OAI/2.0/oai_dc/ http://www.openarchives.org/OAI/2.0/oai_dc.xsd',
         'http://www.w3.org/2001/XMLSchema-instance');
@@ -590,7 +934,12 @@ function _islandora_advanced_oai_generate_metadata($metadataNode, $object, $solr
         foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['description']) as $v)
             $oai_dc->addChild('dc:description', htmlspecialchars($v), $dc_ns);
 
-        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['publisher']) as $v)
+        // Publisher Logic: Check lib4ri_publisher_mt first, then fallback to mapped field
+        $publishers = _islandora_advanced_oai_get_solr_val($solr_doc, 'lib4ri_publisher_mt');
+        if (empty($publishers)) {
+            $publishers = _islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['publisher']);
+        }
+        foreach ($publishers as $v)
             $oai_dc->addChild('dc:publisher', htmlspecialchars($v), $dc_ns);
 
         foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['contributor']) as $v)
@@ -607,6 +956,10 @@ function _islandora_advanced_oai_generate_metadata($metadataNode, $object, $solr
 
         foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['identifier']) as $v)
             $oai_dc->addChild('dc:identifier', htmlspecialchars($v), $dc_ns);
+
+        // Add DOI specifically
+        foreach (_islandora_advanced_oai_get_solr_val($solr_doc, 'mods_identifier_doi_mt') as $v)
+            $oai_dc->addChild('dc:identifier', 'doi:' . htmlspecialchars($v), $dc_ns);
 
         foreach (_islandora_advanced_oai_get_solr_val($solr_doc, $solr_map['source']) as $v)
             $oai_dc->addChild('dc:source', htmlspecialchars($v), $dc_ns);

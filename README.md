@@ -18,6 +18,9 @@ A custom OAI-PMH interface for Islandora 7 (Drupal 7) repositories, designed to 
     *   Correctly handles embargo dates.
 *   **MODS Support:**
     *   Supports `metadataPrefix=mods` to return the raw MODS XML datastream.
+*   **Selective Harvesting:**
+    *   Supports `from` and `until` date filtering (UTC).
+    *   Supports `set` filtering based on collection membership.
 *   **Security:**
     *   HMAC-signed `resumptionTokens` to prevent tampering.
     *   XXE protection.
@@ -38,11 +41,12 @@ The OAI-PMH endpoint is available at:
 
 ### Supported Verbs
 
-*   `Identify`
-*   `ListMetadataFormats`
-*   `ListRecords`
-*   `GetRecord`
-*   `ListIdentifiers` (Not explicitly implemented, handled via `ListRecords` logic or standard errors)
+*   `Identify`: Returns repository information, including the OAI identifier scheme.
+*   `ListMetadataFormats`: Lists supported formats. Supports the optional `identifier` argument to check formats for a specific item.
+*   `ListRecords`: Lists records with metadata. Supports `from`, `until`, and `set` parameters.
+*   `ListIdentifiers`: Lists record headers only. Supports `from`, `until`, and `set` parameters.
+*   `GetRecord`: Retrieves a single record by identifier.
+*   `ListSets`: Lists all collections in the repository as OAI sets.
 
 ### Supported Metadata Formats
 
