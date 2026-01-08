@@ -150,17 +150,17 @@ function _islandora_advanced_oai_handle_identify($xml) {
 
   // Add description block with oai-identifier
   $desc = $identify->addChild('description');
+  // Note: SimpleXML handles the namespace declaration automatically when the 3rd argument is provided.
+  // We do NOT need to addAttribute('xmlns', ...) manually, as that causes "Attribute xmlns redefined" error.
   $oaiId = $desc->addChild('oai-identifier', null, 'http://www.openarchives.org/OAI/2.0/oai-identifier');
-  $oaiId->addAttribute('xmlns', 'http://www.openarchives.org/OAI/2.0/oai-identifier');
-  $oaiId->addAttribute('xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-instance');
-  $oaiId->addAttribute('xsi:schemaLocation', 'http://www.openarchives.org/OAI/2.0/oai-identifier http://www.openarchives.org/OAI/2.0/oai-identifier.xsd');
+  $oaiId->addAttribute('xsi:schemaLocation', 'http://www.openarchives.org/OAI/2.0/oai-identifier http://www.openarchives.org/OAI/2.0/oai-identifier.xsd', 'http://www.w3.org/2001/XMLSchema-instance');
 
-  $oaiId->addChild('scheme', 'oai');
+  $oaiId->addChild('scheme', 'oai', 'http://www.openarchives.org/OAI/2.0/oai-identifier');
   // Extract repository identifier from baseURL or site name, fallback to 'islandora'
   $host = parse_url(url('advanced-oai', array('absolute' => TRUE)), PHP_URL_HOST);
-  $oaiId->addChild('repositoryIdentifier', $host);
-  $oaiId->addChild('delimiter', ':');
-  $oaiId->addChild('sampleIdentifier', 'oai:' . $host . ':islandora:1');
+  $oaiId->addChild('repositoryIdentifier', $host, 'http://www.openarchives.org/OAI/2.0/oai-identifier');
+  $oaiId->addChild('delimiter', ':', 'http://www.openarchives.org/OAI/2.0/oai-identifier');
+  $oaiId->addChild('sampleIdentifier', 'oai:' . $host . ':islandora:1', 'http://www.openarchives.org/OAI/2.0/oai-identifier');
 }
 
 /**
@@ -307,6 +307,20 @@ function _islandora_advanced_oai_handle_list_identifiers($xml, $params) {
       return;
   }
 
+  // --- VALIDATION ---
+  if ($from && !strtotime($from)) {
+      $xml->addChild('error', 'Invalid from date format.')->addAttribute('code', 'badArgument');
+      return;
+  }
+  if ($until && !strtotime($until)) {
+      $xml->addChild('error', 'Invalid until date format.')->addAttribute('code', 'badArgument');
+      return;
+  }
+  if ($from && $until && strtotime($from) > strtotime($until)) {
+      $xml->addChild('error', 'from date cannot be later than until date.')->addAttribute('code', 'badArgument');
+      return;
+  }
+
   // --- SOLR REQUEST ---
   // Switch to Admin to ensure system connectivity
   global $user;
@@ -322,10 +336,22 @@ function _islandora_advanced_oai_handle_list_identifiers($xml, $params) {
       // We filter by Content Model (Citation/Publication)
       $query_string = 'RELS_EXT_hasModel_uri_ms:"info:fedora/ir:citationCModel"';
 
+      // Namespace Filtering (e.g. PID:psi:*)
+      if (defined('ISLANDORA_ADVANCED_OAI_NAMESPACE') && ISLANDORA_ADVANCED_OAI_NAMESPACE) {
+          $query_string .= ' AND PID:' . ISLANDORA_ADVANCED_OAI_NAMESPACE . '\:*';
+      }
+
       // Date Filtering
       if ($from || $until) {
+          // Solr requires full ISO 8601 format (YYYY-MM-DDThh:mm:ssZ)
+          // If only YYYY-MM-DD is provided, we need to append time.
           $f = $from ? $from : '*';
           $u = $until ? $until : '*';
+
+          // Helper to ensure time is appended if missing
+          if ($f != '*' && strpos($f, 'T') === false) $f .= 'T00:00:00Z';
+          if ($u != '*' && strpos($u, 'T') === false) $u .= 'T23:59:59Z';
+
           $query_string .= ' AND fgs_lastModifiedDate_dt:[' . $f . ' TO ' . $u . ']';
       }
 
@@ -531,8 +557,15 @@ function _islandora_advanced_oai_handle_list_records($xml, $params) {
 
       // Date Filtering
       if ($from || $until) {
+          // Solr requires full ISO 8601 format (YYYY-MM-DDThh:mm:ssZ)
+          // If only YYYY-MM-DD is provided, we need to append time.
           $f = $from ? $from : '*';
           $u = $until ? $until : '*';
+
+          // Helper to ensure time is appended if missing
+          if ($f != '*' && strpos($f, 'T') === false) $f .= 'T00:00:00Z';
+          if ($u != '*' && strpos($u, 'T') === false) $u .= 'T23:59:59Z';
+
           $query_string .= ' AND fgs_lastModifiedDate_dt:[' . $f . ' TO ' . $u . ']';
       }
 
@@ -813,6 +846,8 @@ function _islandora_advanced_oai_map_license_to_uri($license_text) {
         'CC BY-SA' => 'https://creativecommons.org/licenses/by-sa/4.0/',
         'CC BY-NC' => 'https://creativecommons.org/licenses/by-nc/4.0/',
         'CC BY-ND' => 'https://creativecommons.org/licenses/by-nd/4.0/',
+        'CC BY-NC-SA' => 'https://creativecommons.org/licenses/by-nc-sa/4.0/',
+        'CC BY-NC-ND' => 'https://creativecommons.org/licenses/by-nc-nd/4.0/',
         'CC0' => 'https://creativecommons.org/publicdomain/zero/1.0/',
     );
     $key = trim(strtoupper($license_text));
@@ -1015,6 +1050,16 @@ function _islandora_advanced_oai_generate_metadata($metadataNode, $object, $solr
     }
 
     if ($pdf_url) $oai_dc->addChild('dc:identifier', htmlspecialchars($pdf_url), $dc_ns);
+
+    // Add Version info to dc:type (DRIVER Guidelines)
+    if (!empty($access_data['version'])) {
+        $v_lower = strtolower($access_data['version']);
+        if (strpos($v_lower, 'published') !== false) {
+            $oai_dc->addChild('dc:type', 'info:eu-repo/semantics/publishedVersion', $dc_ns);
+        } elseif (strpos($v_lower, 'accepted') !== false) {
+            $oai_dc->addChild('dc:type', 'info:eu-repo/semantics/acceptedVersion', $dc_ns);
+        }
+    }
 
     if ($access_data['is_open_access']) {
         $l = $access_data['license'] ? $access_data['license'] : 'Open Access';
