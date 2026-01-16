@@ -1,6 +1,0 @@
-name = Islandora Advanced OAI-PMH 19
-description = Custom OAI-PMH provider optimized for OpenAIRE v4 and Unpaywall. Uses SOlr, MODS and RELS-INT/-EXT parsing.
-core = 7.x
-package = Islandora
-dependencies[] = islandora
-version = 7.x-1.19dev
