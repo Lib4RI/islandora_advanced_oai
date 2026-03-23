@@ -33,7 +33,7 @@ function oai2a_menu() {
       $items[$inst . '/oai2a'] = array(
         'title' => ucfirst($inst) . ' OAI-PMH Provider',
         'page callback' => 'oai2a_request_handler',
-        'page arguments' => array($inst), // Pass institute name to handler
+        'page arguments' => array(0), // arg(0) = institute name from URL path
         'access arguments' => array('access content'),
         'type' => MENU_CALLBACK,
       );
