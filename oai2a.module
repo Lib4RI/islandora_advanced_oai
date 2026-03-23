@@ -1097,46 +1097,95 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
             $oai_dc->addChild('dc:rights', htmlspecialchars($v), $dc_ns);
 
     } else {
-        // Fallback MODS (Auch hier Namespace hinzufügen)
-        foreach ($mods_xml->xpath('//mods:titleInfo/mods:title') as $title)
-            $oai_dc->addChild('dc:title', htmlspecialchars((string)$title), $dc_ns);
+        // Fallback: Parse MODS directly (used by GetRecord)
+        // All values are filtered: empty MODS elements are skipped.
 
+        foreach ($mods_xml->xpath('//mods:titleInfo/mods:title') as $title) {
+            $v = trim((string)$title);
+            if ($v !== '') $oai_dc->addChild('dc:title', htmlspecialchars($v), $dc_ns);
+        }
+
+        // Name handling: Check role to distinguish creator/contributor/funder
         foreach ($mods_xml->xpath('//mods:name') as $name) {
             $fn = _oai2a_get_mods_fullname($name);
-            if ($fn) $oai_dc->addChild('dc:creator', htmlspecialchars($fn), $dc_ns);
-        }
-        $d = $mods_xml->xpath('//mods:originInfo/mods:dateIssued');
-        if($d) $oai_dc->addChild('dc:date', htmlspecialchars($d[0]), $dc_ns);
+            if (!$fn) continue;
 
-        foreach ($mods_xml->xpath('//mods:subject/mods:topic') as $subject)
-            $oai_dc->addChild('dc:subject', htmlspecialchars((string)$subject), $dc_ns);
-        foreach ($mods_xml->xpath('//mods:abstract') as $desc)
-            $oai_dc->addChild('dc:description', htmlspecialchars((string)$desc), $dc_ns);
-        foreach ($mods_xml->xpath('//mods:originInfo/mods:publisher') as $pub)
-            $oai_dc->addChild('dc:publisher', htmlspecialchars((string)$pub), $dc_ns);
+            // Determine role from mods:role/mods:roleTerm
+            $role = 'author'; // default
+            $roles = $name->xpath('mods:role/mods:roleTerm');
+            if ($roles) {
+                foreach ($roles as $r) {
+                    $rt = strtolower(trim((string)$r));
+                    if ($rt === 'funder') { $role = 'funder'; break; }
+                    if (in_array($rt, array('editor', 'contributor', 'supervisor', 'collaborator'))) {
+                        $role = 'contributor';
+                    }
+                }
+            }
+
+            if ($role === 'funder') continue; // Skip funders in DC
+            if ($role === 'contributor') {
+                $oai_dc->addChild('dc:contributor', htmlspecialchars($fn), $dc_ns);
+            } else {
+                $oai_dc->addChild('dc:creator', htmlspecialchars($fn), $dc_ns);
+            }
+        }
+
+        $d = $mods_xml->xpath('//mods:originInfo/mods:dateIssued');
+        if ($d && trim((string)$d[0]) !== '') $oai_dc->addChild('dc:date', htmlspecialchars(trim((string)$d[0])), $dc_ns);
+
+        foreach ($mods_xml->xpath('//mods:subject/mods:topic') as $subject) {
+            $v = trim((string)$subject);
+            if ($v !== '') $oai_dc->addChild('dc:subject', htmlspecialchars($v), $dc_ns);
+        }
+        foreach ($mods_xml->xpath('//mods:abstract') as $desc) {
+            $v = trim((string)$desc);
+            if ($v !== '') $oai_dc->addChild('dc:description', htmlspecialchars($v), $dc_ns);
+        }
+        foreach ($mods_xml->xpath('//mods:originInfo/mods:publisher') as $pub) {
+            $v = trim((string)$pub);
+            if ($v !== '') $oai_dc->addChild('dc:publisher', htmlspecialchars($v), $dc_ns);
+        }
         foreach ($mods_xml->xpath('//mods:genre') as $type) {
-            $type_str = (string)$type;
+            $type_str = trim((string)$type);
+            if ($type_str === '') continue;
             $oai_dc->addChild('dc:type', htmlspecialchars($type_str), $dc_ns);
             $driver_type = _oai2a_map_type_to_driver($type_str);
             if ($driver_type)
                 $oai_dc->addChild('dc:type', $driver_type, $dc_ns);
         }
-        foreach ($mods_xml->xpath('//mods:physicalDescription/mods:internetMediaType') as $fmt)
-            $oai_dc->addChild('dc:format', htmlspecialchars((string)$fmt), $dc_ns);
-        foreach ($mods_xml->xpath('//mods:identifier') as $id)
-            $oai_dc->addChild('dc:identifier', htmlspecialchars((string)$id), $dc_ns);
-        foreach ($mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:titleInfo/mods:title') as $src)
-            $oai_dc->addChild('dc:source', htmlspecialchars((string)$src), $dc_ns);
-        foreach ($mods_xml->xpath('//mods:language/mods:languageTerm') as $lang)
-            $oai_dc->addChild('dc:language', htmlspecialchars((string)$lang), $dc_ns);
-        foreach ($mods_xml->xpath('//mods:subject/mods:geographic') as $cov)
-            $oai_dc->addChild('dc:coverage', htmlspecialchars((string)$cov), $dc_ns);
-        foreach ($mods_xml->xpath('//mods:subject/mods:temporal') as $cov)
-            $oai_dc->addChild('dc:coverage', htmlspecialchars((string)$cov), $dc_ns);
-        foreach ($mods_xml->xpath('//mods:accessCondition') as $rights)
-            $oai_dc->addChild('dc:rights', htmlspecialchars((string)$rights), $dc_ns);
-        foreach ($mods_xml->xpath('//mods:relatedItem[not(@type="host")]/mods:titleInfo/mods:title') as $rel)
-            $oai_dc->addChild('dc:relation', htmlspecialchars((string)$rel), $dc_ns);
+        foreach ($mods_xml->xpath('//mods:physicalDescription/mods:internetMediaType') as $fmt) {
+            $v = trim((string)$fmt);
+            if ($v !== '') $oai_dc->addChild('dc:format', htmlspecialchars($v), $dc_ns);
+        }
+        foreach ($mods_xml->xpath('//mods:identifier') as $id) {
+            $v = trim((string)$id);
+            if ($v !== '') $oai_dc->addChild('dc:identifier', htmlspecialchars($v), $dc_ns);
+        }
+        foreach ($mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:titleInfo/mods:title') as $src) {
+            $v = trim((string)$src);
+            if ($v !== '') $oai_dc->addChild('dc:source', htmlspecialchars($v), $dc_ns);
+        }
+        foreach ($mods_xml->xpath('//mods:language/mods:languageTerm') as $lang) {
+            $v = trim((string)$lang);
+            if ($v !== '') $oai_dc->addChild('dc:language', htmlspecialchars($v), $dc_ns);
+        }
+        foreach ($mods_xml->xpath('//mods:subject/mods:geographic') as $cov) {
+            $v = trim((string)$cov);
+            if ($v !== '') $oai_dc->addChild('dc:coverage', htmlspecialchars($v), $dc_ns);
+        }
+        foreach ($mods_xml->xpath('//mods:subject/mods:temporal') as $cov) {
+            $v = trim((string)$cov);
+            if ($v !== '') $oai_dc->addChild('dc:coverage', htmlspecialchars($v), $dc_ns);
+        }
+        foreach ($mods_xml->xpath('//mods:accessCondition') as $rights) {
+            $v = trim((string)$rights);
+            if ($v !== '') $oai_dc->addChild('dc:rights', htmlspecialchars($v), $dc_ns);
+        }
+        foreach ($mods_xml->xpath('//mods:relatedItem[not(@type="host")]/mods:titleInfo/mods:title') as $rel) {
+            $v = trim((string)$rel);
+            if ($v !== '') $oai_dc->addChild('dc:relation', htmlspecialchars($v), $dc_ns);
+        }
     }
 
     if ($pdf_url) $oai_dc->addChild('dc:identifier', htmlspecialchars($pdf_url), $dc_ns);
