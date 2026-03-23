@@ -71,7 +71,10 @@ function oai2a_request_handler($institute = 'all') {
   $inst_static = $institute;
 
   // Security: Disable external entity loading to prevent XXE attacks
-  libxml_disable_entity_loader(true);
+  // Note: libxml_disable_entity_loader() was removed in PHP 8.2+
+  if (function_exists('libxml_disable_entity_loader')) {
+    libxml_disable_entity_loader(true);
+  }
   libxml_use_internal_errors(true);
 
   $params = drupal_get_query_parameters();
@@ -1159,7 +1162,8 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     $resource->addAttribute('xmlns:datacite', 'http://datacite.org/schema/kernel-4');
 
     // Titles
-    $title = (string)$mods_xml->xpath('//mods:titleInfo/mods:title')[0];
+    $title_results = $mods_xml->xpath('//mods:titleInfo/mods:title');
+    $title = $title_results ? (string)$title_results[0] : '';
     $titles = $resource->addChild('titles');
     $titles->addChild('title', htmlspecialchars($title));
 
@@ -1228,7 +1232,8 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     else $resource->addChild('language', 'eng');
 
     // Resource Type Mapping (COAR Vocabulary)
-    $genre = strtolower((string)$mods_xml->xpath('//mods:genre')[0]);
+    $genre_results = $mods_xml->xpath('//mods:genre');
+    $genre = $genre_results ? strtolower((string)$genre_results[0]) : '';
     $type_uri = 'http://purl.org/coar/resource_type/c_6501'; $type_text = 'journal article';
     if (strpos($genre, 'thesis') !== false || strpos($genre, 'dissertation') !== false) { $type_uri = 'http://purl.org/coar/resource_type/c_46ec'; $type_text = 'thesis'; }
     elseif (strpos($genre, 'book') !== false && strpos($genre, 'chapter') === false) { $type_uri = 'http://purl.org/coar/resource_type/c_2f33'; $type_text = 'book'; }
