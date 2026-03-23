@@ -19,6 +19,7 @@ A custom, high-performance OAI-PMH interface for Islandora 7 (Drupal 7) reposito
     *   **Institute-Bound Tokens:** HMAC-signed `resumptionTokens` are cryptographically tied to their specific institute endpoint.
     *   **XXE Protection:** Hardened against XML External Entity attacks.
     *   **Admin Impersonation:** Securely loads Fedora objects bypassing frontend access filters.
+    *   **XML Escaping:** Strict escaping (`htmlspecialchars`) for all dynamically injected values in SimpleXML to prevent 500 Internal Server errors from unescaped characters.
 
 ## Installation
 
@@ -38,7 +39,7 @@ OAI2A provides four separate institute entry points:
 - **WSL:** `https://your-site.com/wsl/oai2a`
 - **PSI:** `https://your-site.com/psi/oai2a`
 
-*Note: The legacy path `/oai2a` is also supported and defaults to PSI.*
+*Note: The legacy path `/oai2a` is also supported. While the `/institute/oai2a` paths filter records to a specific institute namespace, navigating to the generic `/oai2a` endpoint will return all records across the entire repository by default.*
 
 ### Supported Verbs
 

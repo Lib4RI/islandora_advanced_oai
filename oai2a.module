@@ -39,11 +39,11 @@ function oai2a_menu() {
       );
   }
 
-  // Register legacy path /oai2a, defaulting to PSI institute
+  // Register legacy path /oai2a, defaulting to all records
   $items['oai2a'] = array(
     'title' => 'Advanced OAI-PMH Provider',
     'page callback' => 'oai2a_request_handler',
-    'page arguments' => array('psi'),
+    'page arguments' => array('all'),
     'access arguments' => array('access content'),
     'type' => MENU_CALLBACK,
   );
@@ -55,13 +55,13 @@ function oai2a_menu() {
  * Main Request Handler.
  * Dispatches OAI verbs, handles caching, and manages security.
  */
-function oai2a_request_handler($institute = 'psi') {
+function oai2a_request_handler($institute = 'all') {
   drupal_add_http_header('Content-Type', 'text/xml; charset=utf-8');
 
   // --- INSTITUTE CONTEXT ---
   // Store current institute in a drupal_static variable for helpers (like Solr query builders) to access.
   // This avoids passing the institute parameter through dozens of function signatures.
-  $inst_static = &drupal_static('_oai2a_current_institute', 'psi');
+  $inst_static = &drupal_static('_oai2a_current_institute', 'all');
   $inst_static = $institute;
 
   // Security: Disable external entity loading to prevent XXE attacks
@@ -88,7 +88,7 @@ function oai2a_request_handler($institute = 'psi') {
   $xml->addChild('responseDate', gmdate('Y-m-d\TH:i:s\Z'));
   $xml->addComment('Institute: ' . $institute);
 
-  $oai_path = ($institute == 'psi' && arg(0) == 'oai2a') ? 'oai2a' : $institute . '/oai2a';
+  $oai_path = ($institute == 'all' && arg(0) == 'oai2a') ? 'oai2a' : $institute . '/oai2a';
   $requestNode = $xml->addChild('request', url($oai_path, array('absolute' => TRUE)));
   if (!empty($verb)) $requestNode->addAttribute('verb', $verb);
 
@@ -128,7 +128,7 @@ function oai2a_request_handler($institute = 'psi') {
   } catch (Exception $e) {
     // Security: Log detailed error to watchdog, show safe error to user
     watchdog('oai2a', 'Exception: @msg', array('@msg' => $e->getMessage()), WATCHDOG_ERROR);
-    $err = $xml->addChild('error', 'An internal error occurred: ' . $e->getMessage());
+    $err = $xml->addChild('error', htmlspecialchars('An internal error occurred: ' . $e->getMessage()));
     $err->addAttribute('code', 'noRecordsMatch');
   }
 
@@ -163,13 +163,14 @@ function _oai2a_output($xml, $cache_key = false) {
  * OAI Verb: Identify
  */
 function _oai2a_handle_identify($xml) {
-  $institute = drupal_static('_oai2a_current_institute', 'psi');
+  $institute = drupal_static('_oai2a_current_institute', 'all');
   // Determine correct path for baseURL (handle legacy vs institute-specific paths)
-  $oai_path = ($institute == 'psi' && arg(0) == 'oai2a') ? 'oai2a' : $institute . '/oai2a';
+  $oai_path = ($institute == 'all' && arg(0) == 'oai2a') ? 'oai2a' : $institute . '/oai2a';
 
   $identify = $xml->addChild('Identify');
   // Branding: Append institute name to repository name
-  $identify->addChild('repositoryName', variable_get('site_name', 'Islandora Repository') . ' (' . ucfirst($institute) . ')');
+  $repo_name = variable_get('site_name', 'Islandora Repository') . ($institute !== 'all' ? ' (' . ucfirst($institute) . ')' : '');
+  $identify->addChild('repositoryName', htmlspecialchars($repo_name));
   $identify->addChild('baseURL', url($oai_path, array('absolute' => TRUE)));
   $identify->addChild('protocolVersion', '2.0');
   $identify->addChild('adminEmail', variable_get('site_mail', 'admin@example.com'));
@@ -185,11 +186,11 @@ function _oai2a_handle_identify($xml) {
   $oaiId->addAttribute('xsi:schemaLocation', 'http://www.openarchives.org/OAI/2.0/oai-identifier http://www.openarchives.org/OAI/2.0/oai-identifier.xsd', 'http://www.w3.org/2001/XMLSchema-instance');
 
   $oaiId->addChild('scheme', 'oai', 'http://www.openarchives.org/OAI/2.0/oai-identifier');
-  $oai_path = ($institute == 'psi' && arg(0) == 'oai2a') ? 'oai2a' : $institute . '/oai2a';
+  $oai_path = ($institute == 'all' && arg(0) == 'oai2a') ? 'oai2a' : $institute . '/oai2a';
   $host = parse_url(url($oai_path, array('absolute' => TRUE)), PHP_URL_HOST);
   $oaiId->addChild('repositoryIdentifier', $host, 'http://www.openarchives.org/OAI/2.0/oai-identifier');
   $oaiId->addChild('delimiter', ':', 'http://www.openarchives.org/OAI/2.0/oai-identifier');
-  $oaiId->addChild('sampleIdentifier', 'oai:' . $host . ':' . $institute . ':1', 'http://www.openarchives.org/OAI/2.0/oai-identifier');
+  $oaiId->addChild('sampleIdentifier', 'oai:' . $host . ':' . ($institute == 'all' ? 'all' : $institute) . ':1', 'http://www.openarchives.org/OAI/2.0/oai-identifier');
 }
 /**
  * OAI Verb: ListMetadataFormats
@@ -255,10 +256,9 @@ function _oai2a_handle_get_record($xml, $params) {
   try {
       $object = islandora_object_load($params['identifier']);
       // --- CROSS-INSTITUTE SECURITY ---
-      // Ensure the requested object belongs to the current institute's namespace (PID prefix).
       // This prevents a user on the /eawag/oai2a endpoint from retrieving records from /psi/.
-      $institute = drupal_static('_oai2a_current_institute', 'psi');
-      if ($object && strpos($object->id, $institute . ':') !== 0) {
+      $institute = drupal_static('_oai2a_current_institute', 'all');
+      if ($institute !== 'all' && $object && strpos($object->id, $institute . ':') !== 0) {
           $object = null; // Deny access
       }
   } catch (Exception $e) {
@@ -317,7 +317,7 @@ function _oai2a_handle_list_identifiers($xml, $params) {
       $signature_provided = $parts[5];
 
       // Verify signature to prevent tampering
-      $institute = drupal_static('_oai2a_current_institute', 'psi');
+      $institute = drupal_static('_oai2a_current_institute', 'all');
       $data_to_sign = $prefix_candidate . '|' . $offset_candidate . '|' . $from_candidate . '|' . $until_candidate . '|' . $set_candidate;
       $expected_signature = drupal_hmac_base64($institute . '|' . $data_to_sign, drupal_get_private_key());
 
@@ -375,8 +375,10 @@ function _oai2a_handle_list_identifiers($xml, $params) {
       // --- SOLR NAMESPACE FILTERING ---
       // Dynamically restrict results to the current institute using the PID field.
       // e.g., Filter by PID:eawag:* for the Eawag endpoint.
-      $institute = drupal_static('_oai2a_current_institute', 'psi');
-      $query_string .= ' AND PID:' . $institute . ':*';
+      $institute = drupal_static('_oai2a_current_institute', 'all');
+      if ($institute !== 'all') {
+          $query_string .= ' AND PID:' . $institute . ':*';
+      }
 
       // Date Filtering
       if ($from || $until) {
@@ -430,7 +432,7 @@ function _oai2a_handle_list_identifiers($xml, $params) {
       }
 
   } catch (Exception $e) {
-      $xml->addChild('error', 'Solr Request failed: ' . $e->getMessage() . ' [URL: ' . $request_url . ']')->addAttribute('code', 'noRecordsMatch');
+      $xml->addChild('error', htmlspecialchars('Solr Request failed: ' . $e->getMessage() . ' [URL: ' . $request_url . ']'))->addAttribute('code', 'noRecordsMatch');
       $user = $original_user;
       return;
   }
@@ -493,7 +495,7 @@ function _oai2a_handle_list_identifiers($xml, $params) {
       // --- SECURE TOKEN GENERATION ---
       // Create new signed token. We include the $institute in the HMAC signature
       // to ensure that a token generated for Eawag cannot be illegally used on the Psi endpoint.
-      $institute = drupal_static('_oai2a_current_institute', 'psi');
+      $institute = drupal_static('_oai2a_current_institute', 'all');
       $data_to_sign = $prefix . '|' . $next_offset . '|' . ($from ? $from : '') . '|' . ($until ? $until : '') . '|' . ($set ? $set : '');
       $signature = drupal_hmac_base64($institute . '|' . $data_to_sign, drupal_get_private_key());
       $tokenNode[0] = base64_encode($data_to_sign . '|' . $signature);
@@ -554,7 +556,7 @@ function _oai2a_handle_list_records($xml, $params) {
       $signature_provided = $parts[5];
 
       // Verify signature to prevent tampering
-      $institute = drupal_static('_oai2a_current_institute', 'psi');
+      $institute = drupal_static('_oai2a_current_institute', 'all');
       $data_to_sign = $prefix_candidate . '|' . $offset_candidate . '|' . $from_candidate . '|' . $until_candidate . '|' . $set_candidate;
       $expected_signature = drupal_hmac_base64($institute . '|' . $data_to_sign, drupal_get_private_key());
 
@@ -597,8 +599,10 @@ function _oai2a_handle_list_records($xml, $params) {
 
       // --- SOLR NAMESPACE FILTERING ---
       // Dynamically restrict results to the current institute using the PID field.
-      $institute = drupal_static('_oai2a_current_institute', 'psi');
-      $query_string .= ' AND PID:' . $institute . ':*';
+      $institute = drupal_static('_oai2a_current_institute', 'all');
+      if ($institute !== 'all') {
+          $query_string .= ' AND PID:' . $institute . ':*';
+      }
       if ($from || $until) {
           // Solr requires full ISO 8601 format (YYYY-MM-DDThh:mm:ssZ)
           // If only YYYY-MM-DD is provided, we need to append time.
@@ -653,7 +657,7 @@ function _oai2a_handle_list_records($xml, $params) {
       }
 
   } catch (Exception $e) {
-      $xml->addChild('error', 'Solr Request failed: ' . $e->getMessage() . ' [URL: ' . $request_url . ']')->addAttribute('code', 'noRecordsMatch');
+      $xml->addChild('error', htmlspecialchars('Solr Request failed: ' . $e->getMessage() . ' [URL: ' . $request_url . ']'))->addAttribute('code', 'noRecordsMatch');
       $user = $original_user;
       return;
   }
@@ -723,7 +727,7 @@ function _oai2a_handle_list_records($xml, $params) {
       // --- SECURE TOKEN GENERATION ---
       // Create new signed token. We include the $institute in the HMAC signature
       // to ensure that a token generated for Eawag cannot be illegally used on the Psi endpoint.
-      $institute = drupal_static('_oai2a_current_institute', 'psi');
+      $institute = drupal_static('_oai2a_current_institute', 'all');
       $data_to_sign = $prefix . '|' . $next_offset . '|' . ($from ? $from : '') . '|' . ($until ? $until : '') . '|' . ($set ? $set : '');
       $signature = drupal_hmac_base64($institute . '|' . $data_to_sign, drupal_get_private_key());
       $tokenNode[0] = base64_encode($data_to_sign . '|' . $signature);
@@ -749,8 +753,11 @@ function _oai2a_handle_list_sets($xml, $params) {
 
     // --- SOLR NAMESPACE FILTERING ---
     // Only query for collections that belong to the current institute's namespace (PID prefix).
-    $institute = drupal_static('_oai2a_current_institute', 'psi');
-    $query_string = 'RELS_EXT_hasModel_uri_ms:"info:fedora/islandora:collectionCModel" AND PID:' . $institute . ':*';
+    $institute = drupal_static('_oai2a_current_institute', 'all');
+    $query_string = 'RELS_EXT_hasModel_uri_ms:"info:fedora/islandora:collectionCModel"';
+    if ($institute !== 'all') {
+        $query_string .= ' AND PID:' . $institute . ':*';
+    }
     $fl_fields = array('PID', 'fgs_label_s', 'dc.description');
     $fl_string = implode(',', $fl_fields);
 
@@ -792,7 +799,7 @@ function _oai2a_handle_list_sets($xml, $params) {
              throw new Exception("Solr HTTP " . $response->code);
         }
     } catch (Exception $e) {
-        $xml->addChild('error', 'Could not retrieve sets: ' . $e->getMessage())->addAttribute('code', 'noSetHierarchy');
+        $xml->addChild('error', htmlspecialchars('Could not retrieve sets: ' . $e->getMessage()))->addAttribute('code', 'noSetHierarchy');
     }
 }
 
@@ -801,7 +808,7 @@ function _oai2a_handle_list_sets($xml, $params) {
  */
 function _oai2a_build_header($parent, $pid, $last_mod, $sets = array()) {
   $header = ($parent->getName() == 'header') ? $parent : $parent->addChild('header');
-  $header->addChild('identifier', $pid);
+  $header->addChild('identifier', htmlspecialchars($pid));
   if ($last_mod instanceof DateTime) $last_mod = $last_mod->format('Y-m-d\TH:i:s\Z');
   $header->addChild('datestamp', $last_mod);
 
@@ -1201,7 +1208,7 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     // Publisher
     $pub = $mods_xml->xpath('//mods:originInfo/mods:publisher');
     if ($pub) $resource->addChild('publisher', htmlspecialchars((string)$pub[0]));
-    else $resource->addChild('publisher', variable_get('site_name', 'Islandora Repository'));
+    else $resource->addChild('publisher', htmlspecialchars(variable_get('site_name', 'Islandora Repository')));
 
     // Language
     $lang = $mods_xml->xpath('//mods:language/mods:languageTerm');
