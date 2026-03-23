@@ -111,8 +111,9 @@ function oai2a_request_handler($institute = 'all') {
   $comment = $dom_root->ownerDocument->createComment(' Institute: ' . $institute . ' ');
   $dom_root->appendChild($comment);
 
-  $oai_path = ($institute == 'all' && arg(0) == 'oai2a') ? 'oai2a' : $institute . '/oai2a';
-  $requestNode = $xml->addChild('request', url($oai_path, array('absolute' => TRUE)));
+  // Always use 'oai2a' as the Drupal internal path.
+  // Drupal's url() automatically prepends the base path (e.g., /eawag/) in subdirectory installs.
+  $requestNode = $xml->addChild('request', url('oai2a', array('absolute' => TRUE)));
   if (!empty($verb)) $requestNode->addAttribute('verb', $verb);
 
   // Validation: resumptionToken cannot be combined with metadataPrefix
@@ -193,14 +194,12 @@ function _oai2a_output($xml, $cache_key = false) {
  */
 function _oai2a_handle_identify($xml) {
   $institute = drupal_static('_oai2a_current_institute', 'all');
-  // Determine correct path for baseURL (handle legacy vs institute-specific paths)
-  $oai_path = ($institute == 'all' && arg(0) == 'oai2a') ? 'oai2a' : $institute . '/oai2a';
 
   $identify = $xml->addChild('Identify');
   // Branding: Append institute name to repository name
   $repo_name = variable_get('site_name', 'Islandora Repository') . ($institute !== 'all' ? ' (' . ucfirst($institute) . ')' : '');
   $identify->addChild('repositoryName', htmlspecialchars($repo_name));
-  $identify->addChild('baseURL', url($oai_path, array('absolute' => TRUE)));
+  $identify->addChild('baseURL', url('oai2a', array('absolute' => TRUE)));
   $identify->addChild('protocolVersion', '2.0');
   $identify->addChild('adminEmail', variable_get('site_mail', 'admin@example.com'));
   $identify->addChild('earliestDatestamp', '2000-01-01T00:00:00Z');
@@ -215,8 +214,7 @@ function _oai2a_handle_identify($xml) {
   $oaiId->addAttribute('xsi:schemaLocation', 'http://www.openarchives.org/OAI/2.0/oai-identifier http://www.openarchives.org/OAI/2.0/oai-identifier.xsd', 'http://www.w3.org/2001/XMLSchema-instance');
 
   $oaiId->addChild('scheme', 'oai', 'http://www.openarchives.org/OAI/2.0/oai-identifier');
-  $oai_path = ($institute == 'all' && arg(0) == 'oai2a') ? 'oai2a' : $institute . '/oai2a';
-  $host = parse_url(url($oai_path, array('absolute' => TRUE)), PHP_URL_HOST);
+  $host = parse_url(url('oai2a', array('absolute' => TRUE)), PHP_URL_HOST);
   $oaiId->addChild('repositoryIdentifier', $host, 'http://www.openarchives.org/OAI/2.0/oai-identifier');
   $oaiId->addChild('delimiter', ':', 'http://www.openarchives.org/OAI/2.0/oai-identifier');
   $oaiId->addChild('sampleIdentifier', 'oai:' . $host . ':' . ($institute == 'all' ? 'all' : $institute) . ':1', 'http://www.openarchives.org/OAI/2.0/oai-identifier');
@@ -406,7 +404,7 @@ function _oai2a_handle_list_identifiers($xml, $params) {
       // e.g., Filter by PID:eawag:* for the Eawag endpoint.
       $institute = drupal_static('_oai2a_current_institute', 'all');
       if ($institute !== 'all') {
-          $query_string .= ' AND PID:' . $institute . ':*';
+          $query_string .= ' AND PID:' . $institute . '\\:*';
       }
 
       // Date Filtering
@@ -630,7 +628,7 @@ function _oai2a_handle_list_records($xml, $params) {
       // Dynamically restrict results to the current institute using the PID field.
       $institute = drupal_static('_oai2a_current_institute', 'all');
       if ($institute !== 'all') {
-          $query_string .= ' AND PID:' . $institute . ':*';
+          $query_string .= ' AND PID:' . $institute . '\\:*';
       }
       if ($from || $until) {
           // Solr requires full ISO 8601 format (YYYY-MM-DDThh:mm:ssZ)
@@ -785,7 +783,7 @@ function _oai2a_handle_list_sets($xml, $params) {
     $institute = drupal_static('_oai2a_current_institute', 'all');
     $query_string = 'RELS_EXT_hasModel_uri_ms:"info:fedora/islandora:collectionCModel"';
     if ($institute !== 'all') {
-        $query_string .= ' AND PID:' . $institute . ':*';
+        $query_string .= ' AND PID:' . $institute . '\\:*';
     }
     $fl_fields = array('PID', 'fgs_label_s', 'dc.description');
     $fl_string = implode(',', $fl_fields);
