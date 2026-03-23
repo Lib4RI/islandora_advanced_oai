@@ -26,24 +26,13 @@ define('oai2a_SOLR_CORE', 'collection1');
  */
 function oai2a_menu() {
   $items = array();
-  // Define supported institutes for separate entry points
-  $institutes = array('eawag', 'empa', 'wsl', 'psi');
-  foreach ($institutes as $inst) {
-      // Register path: /{institute}/oai2a (e.g., /eawag/oai2a)
-      $items[$inst . '/oai2a'] = array(
-        'title' => ucfirst($inst) . ' OAI-PMH Provider',
-        'page callback' => 'oai2a_request_handler',
-        'page arguments' => array(0), // arg(0) = institute name from URL path
-        'access arguments' => array('access content'),
-        'type' => MENU_CALLBACK,
-      );
-  }
-
-  // Register legacy path /oai2a, defaulting to all records
+  // Register path /oai2a — works for all institutes.
+  // In a multi-site/subdirectory Drupal install (e.g., /eawag/, /empa/, ...),
+  // each institute has its own Drupal base URL, so the internal path is always 'oai2a'.
+  // The institute is detected from the URL in oai2a_request_handler().
   $items['oai2a'] = array(
     'title' => 'Advanced OAI-PMH Provider',
     'page callback' => 'oai2a_request_handler',
-    'page arguments' => array('all'),
     'access arguments' => array('access content'),
     'type' => MENU_CALLBACK,
   );
@@ -65,12 +54,28 @@ function oai2a_request_handler($institute = 'all') {
   ini_set('display_errors', 0);
 
   // --- INSTITUTE CONTEXT ---
-  // Determine institute directly from URL path, bypassing hook_menu page arguments.
-  // Paths: /eawag/oai2a, /empa/oai2a, /wsl/oai2a, /psi/oai2a, /oai2a
+  // Detect institute from the raw server URL and Drupal's base_path().
+  // In a multi-site/subdirectory Drupal install (e.g., /eawag/ is the base path),
+  // arg(0) only returns the internal Drupal path ('oai2a'), not the institute.
+  // So we extract the institute from the base_path or REQUEST_URI instead.
   $valid_institutes = array('eawag', 'empa', 'wsl', 'psi');
-  $path_arg0 = arg(0);
-  if (in_array($path_arg0, $valid_institutes)) {
-    $institute = $path_arg0;
+
+  // Strategy 1: Check Drupal's base_path (e.g., '/eawag/' → 'eawag')
+  $base = trim(base_path(), '/');
+  if (in_array($base, $valid_institutes)) {
+    $institute = $base;
+  }
+
+  // Strategy 2: Fallback to parsing the raw REQUEST_URI
+  if ($institute === 'all') {
+    $uri_path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+    $uri_parts = explode('/', trim($uri_path, '/'));
+    foreach ($uri_parts as $part) {
+      if (in_array($part, $valid_institutes)) {
+        $institute = $part;
+        break;
+      }
+    }
   }
   // Store in drupal_static for helpers (Solr query builders etc.) to access.
   $inst_static = &drupal_static('_oai2a_current_institute', 'all');
