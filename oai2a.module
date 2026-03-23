@@ -58,6 +58,12 @@ function oai2a_menu() {
 function oai2a_request_handler($institute = 'all') {
   drupal_add_http_header('Content-Type', 'text/xml; charset=utf-8');
 
+  // --- ERROR SUPPRESSION ---
+  // Prevent harmless Warnings and Notices from third-party modules (like Views)
+  // from breaking the XML response or triggering 500 Internal Server Exceptions.
+  error_reporting(E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR);
+  ini_set('display_errors', 0);
+
   // --- INSTITUTE CONTEXT ---
   // Store current institute in a drupal_static variable for helpers (like Solr query builders) to access.
   // This avoids passing the institute parameter through dozens of function signatures.
