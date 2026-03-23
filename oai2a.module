@@ -25,6 +25,7 @@ define('oai2a_SOLR_CORE', 'collection1');
  * Registers the OAI endpoint URLs for each institute.
  */
 function oai2a_menu() {
+  $items = array();
   // Define supported institutes for separate entry points
   $institutes = array('eawag', 'empa', 'wsl', 'psi');
   foreach ($institutes as $inst) {
@@ -190,7 +191,6 @@ function _oai2a_handle_identify($xml) {
   $oaiId->addChild('delimiter', ':', 'http://www.openarchives.org/OAI/2.0/oai-identifier');
   $oaiId->addChild('sampleIdentifier', 'oai:' . $host . ':' . $institute . ':1', 'http://www.openarchives.org/OAI/2.0/oai-identifier');
 }
-
 /**
  * OAI Verb: ListMetadataFormats
  */
@@ -434,7 +434,6 @@ function _oai2a_handle_list_identifiers($xml, $params) {
       $user = $original_user;
       return;
   }
-
   // Handle No Results
   if (empty($solr_docs)) {
     $user = $original_user;
@@ -658,7 +657,6 @@ function _oai2a_handle_list_records($xml, $params) {
       $user = $original_user;
       return;
   }
-
   // Handle No Results
   if (empty($solr_docs)) {
     $user = $original_user;
@@ -811,7 +809,6 @@ function _oai2a_build_header($parent, $pid, $last_mod, $sets = array()) {
       $header->addChild('setSpec', htmlspecialchars($setSpec));
   }
 }
-
 /**
  * Logic: Analyzes access rights based on RELS-INT datastream.
  * Determines Open Access status, specific licenses, and versions.
@@ -1385,13 +1382,3 @@ function _oai2a_build_citation($content, $style_s) {
 
     return $content;
 }
-
-
-
-
-
-
-
-
-
-
