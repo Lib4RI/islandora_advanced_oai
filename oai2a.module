@@ -65,8 +65,14 @@ function oai2a_request_handler($institute = 'all') {
   ini_set('display_errors', 0);
 
   // --- INSTITUTE CONTEXT ---
-  // Store current institute in a drupal_static variable for helpers (like Solr query builders) to access.
-  // This avoids passing the institute parameter through dozens of function signatures.
+  // Determine institute directly from URL path, bypassing hook_menu page arguments.
+  // Paths: /eawag/oai2a, /empa/oai2a, /wsl/oai2a, /psi/oai2a, /oai2a
+  $valid_institutes = array('eawag', 'empa', 'wsl', 'psi');
+  $path_arg0 = arg(0);
+  if (in_array($path_arg0, $valid_institutes)) {
+    $institute = $path_arg0;
+  }
+  // Store in drupal_static for helpers (Solr query builders etc.) to access.
   $inst_static = &drupal_static('_oai2a_current_institute', 'all');
   $inst_static = $institute;
 
