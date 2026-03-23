@@ -37,7 +37,7 @@ A custom OAI-PMH interface for Islandora 7 (Drupal 7) repositories, designed to 
 ## Usage
 
 The OAI-PMH endpoint is available at:
-`http://your-site.com/advanced-oai`
+`http://your-site.com/oai2a`
 
 ### Supported Verbs
 
