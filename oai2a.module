@@ -300,7 +300,26 @@ function _oai2a_handle_get_record($xml, $params) {
   }
 
   $record = $xml->addChild('GetRecord')->addChild('record');
-  _oai2a_build_header($record, $object->id, $object->lastModifiedDate);
+
+  // Extract sets from RELS-EXT (collection memberships)
+  $sets = array();
+  if (isset($object['RELS-EXT'])) {
+      $rels_content = $object['RELS-EXT']->content;
+      if ($rels_content) {
+          $rels_xml = new SimpleXMLElement($rels_content);
+          $rels_xml->registerXPathNamespace('fedora', 'info:fedora/fedora-system:def/relations-external#');
+          foreach ($rels_xml->xpath('//fedora:isMemberOfCollection') as $member) {
+              $res = (string)$member->attributes('http://www.w3.org/1999/02/22-rdf-syntax-ns#')->resource;
+              if ($res) {
+                  $parts = explode('/', $res);
+                  $set_spec = end($parts);
+                  $sets[] = str_replace(':', '_', $set_spec);
+              }
+          }
+      }
+  }
+
+  _oai2a_build_header($record, $object->id, $object->lastModifiedDate, $sets);
 
   // Generate Metadata: Pass empty array for solr_doc to trigger MODS fallback parsing
   // Check if the requested metadataPrefix is supported
@@ -1100,7 +1119,8 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         // Fallback: Parse MODS directly (used by GetRecord)
         // All values are filtered: empty MODS elements are skipped.
 
-        foreach ($mods_xml->xpath('//mods:titleInfo/mods:title') as $title) {
+        // Only top-level titles (exclude titles inside relatedItem, which go to dc:source)
+        foreach ($mods_xml->xpath('//mods:titleInfo[not(ancestor::mods:relatedItem)]/mods:title') as $title) {
             $v = trim((string)$title);
             if ($v !== '') $oai_dc->addChild('dc:title', htmlspecialchars($v), $dc_ns);
         }
@@ -1117,7 +1137,11 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
                 foreach ($roles as $r) {
                     $rt = strtolower(trim((string)$r));
                     if ($rt === 'funder') { $role = 'funder'; break; }
-                    if (in_array($rt, array('editor', 'contributor', 'supervisor', 'collaborator'))) {
+                    // Match all non-author roles (exact or partial)
+                    if (in_array($rt, array('editor', 'edt', 'contributor', 'supervisor', 'collaborator', 'thesis advisor', 'advisor', 'ths', 'degree supervisor', 'degree grantor'))
+                        || strpos($rt, 'advisor') !== false
+                        || strpos($rt, 'supervisor') !== false
+                        || strpos($rt, 'editor') !== false) {
                         $role = 'contributor';
                     }
                 }
