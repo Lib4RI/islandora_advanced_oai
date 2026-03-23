@@ -1,77 +1,55 @@
-# Islandora Advanced OAI-PMH Provider
+# OAI2A - Advanced OAI-PMH Provider
 
-A custom OAI-PMH interface for Islandora 7 (Drupal 7) repositories, designed to meet modern harvesting requirements like OpenAIRE v4.0 and Unpaywall.
+A custom, high-performance OAI-PMH interface for Islandora 7 (Drupal 7) repositories, optimized for OpenAIRE v4.0 and Unpaywall compliance.
 
-## Features
+## Key Features
 
-*   **High Performance:** Uses direct Solr queries to bypass Drupal's internal overhead for `ListRecords` and `ListIdentifiers`.
+*   **Multi-Institute Support:** Provides separate, filtered entry points for **Eawag**, **Empa**, **WSL**, and **PSI**.
+*   **High Performance:** Uses direct, raw Solr queries to bypass Drupal's internal overhead for large-scale harvesting (`ListRecords`, `ListIdentifiers`).
 *   **Hybrid Metadata Fetching:**
-    *   Fetches descriptive metadata from Solr for speed.
-    *   Fetches rights and file information from Fedora (RELS-INT/RELS-EXT) for precision.
+    *   Fetches descriptive metadata from Solr for maximum speed.
+    *   Fetches rights, licenses, and file versions from Fedora (`RELS-INT`/`RELS-EXT`) for precision.
 *   **OpenAIRE v4.0 Compliance:**
-    *   Supports `metadataPrefix=oai_openaire`.
-    *   Maps funding information, DOIs, and resource types to the OpenAIRE schema.
-    *   Handles "Access Rights" (Open Access, Embargoed, Restricted) based on file availability.
-*   **Unpaywall Optimization:**
-    *   Exposes direct links to PDF datastreams.
-    *   Distinguishes between "Published Version" (VoR), "Accepted Manuscript" (AM), etc.
-    *   Correctly handles embargo dates.
-*   **MODS Support:**
-    *   Supports `metadataPrefix=mods` to return the raw MODS XML datastream.
-*   **Selective Harvesting:**
-    *   Supports `from` and `until` date filtering (UTC).
-    *   Supports `set` filtering based on collection membership.
-*   **Security:**
-    *   HMAC-signed `resumptionTokens` to prevent tampering.
-    *   XXE protection.
-    *   Admin impersonation for safe object loading.
+    *   Full support for OpenAIRE metadata schema (`metadataPrefix=oai_openaire`).
+    *   Automatic mapping of funding info, DOIs, and Resource Types.
+*   **Unpaywall & Open Access Optimization:**
+    *   Exposes direct PDF datastream links.
+    *   Detects and maps content versions (VoR, AM, etc.) and embargo dates.
+*   **Security & Reliability:**
+    *   **Institute-Bound Tokens:** HMAC-signed `resumptionTokens` are cryptographically tied to their specific institute endpoint.
+    *   **XXE Protection:** Hardened against XML External Entity attacks.
+    *   **Admin Impersonation:** Securely loads Fedora objects bypassing frontend access filters.
 
 ## Installation
 
 1.  Clone this module into your Drupal `sites/all/modules` directory.
-2.  Enable the module via `drush en islandora_advanced_oai` or the admin interface.
-3.  Configure the Solr connection in `islandora_advanced_oai.module` (constants at the top of the file):
-    *   `ISLANDORA_ADVANCED_OAI_SOLR_URL`
-    *   `ISLANDORA_ADVANCED_OAI_SOLR_CORE`
+2.  Enable the module: `drush en oai2a`
+3.  Configure the Solr connection in `oai2a.module` (constants at the top):
+    *   `oai2a_SOLR_URL`
+    *   `oai2a_SOLR_CORE`
+4.  **Rebuild Menu:** Trigger a Drupal menu rebuild (e.g., `drush cc menu`) to activate the institute paths.
 
 ## Usage
 
-The OAI-PMH endpoint is available at:
-`http://your-site.com/advanced-oai`
+OAI2A provides four separate institute entry points:
+
+- **Eawag:** `https://your-site.com/eawag/oai2a`
+- **Empa:** `https://your-site.com/empa/oai2a`
+- **WSL:** `https://your-site.com/wsl/oai2a`
+- **PSI:** `https://your-site.com/psi/oai2a`
+
+*Note: The legacy path `/oai2a` is also supported and defaults to PSI.*
 
 ### Supported Verbs
 
-*   `Identify`: Returns repository information, including the OAI identifier scheme.
-*   `ListMetadataFormats`: Lists supported formats. Supports the optional `identifier` argument to check formats for a specific item.
-*   `ListRecords`: Lists records with metadata. Supports `from`, `until`, and `set` parameters.
-*   `ListIdentifiers`: Lists record headers only. Supports `from`, `until`, and `set` parameters.
-*   `GetRecord`: Retrieves a single record by identifier.
-*   `ListSets`: Lists all collections in the repository as OAI sets.
-
-### Supported Metadata Formats
-
-*   **oai_dc**: Standard Dublin Core.
-*   **oai_openaire**: OpenAIRE v4.0 compliant XML.
-*   **mods**: Raw MODS XML from the object's datastream.
-
-## Configuration
-
-### Solr Mapping
-The module uses a hardcoded mapping array in `_islandora_advanced_oai_handle_list_records` to map Solr fields to metadata elements. You may need to adjust these keys to match your GSearch `schema.xml`.
-
-```php
-$solr_map = array(
-    'title'       => 'fgs_label_s',
-    'creator'     => 'dc.creator',
-    // ...
-);
-```
-
-### Access Rights Logic
-The module determines access rights by inspecting the `RELS-INT` datastream of the object. It looks for specific predicates (e.g., `lib4ridora-multi-embargo-availability`) to determine if a PDF is "public", "embargoed", or "restricted".
+*   `Identify`: Returns repository information, including the specific institute name.
+*   `ListMetadataFormats`: Lists supported formats (oai_dc, oai_openaire, mods).
+*   `ListRecords` / `ListIdentifiers`: Lists records filtered by the endpoint's institute namespace. Supports `from`, `until`, and `set` parameters.
+*   `GetRecord`: Retrieves a single record (validated against the endpoint's institute).
+*   `ListSets`: Lists collections belonging to the specific institute.
 
 ## Requirements
 
-*   Islandora 7.x
-*   PHP 5.3+
-*   Solr 4+
+*   Islandora 7.x (Drupal 7)
+*   PHP 5.6+
+*   Solr 4.x or later
