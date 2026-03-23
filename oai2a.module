@@ -161,6 +161,12 @@ function _oai2a_output($xml, $cache_key = false) {
         cache_set($cache_key, $output, 'cache', time() + 3600);
     }
 
+    // Ensure no previous PHP output (like Notices from third-party modules in hook_init)
+    // corrupts the strict XML response. Clear the entire output buffer stack.
+    while (ob_get_level()) {
+        ob_end_clean();
+    }
+
     echo $output;
     drupal_exit();
 }
