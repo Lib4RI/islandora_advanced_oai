@@ -564,20 +564,21 @@ function _oai2a_handle_list_records($xml, $params) {
   $set = null;
 
   // --- CONFIGURATION: SOLR FIELD MAPPING ---
-  // Adjust these field names to match your GSearch schema!
+  // Field names verified against production Solr (lib-dora-prod1.emp-eaw.ch:8080)
+  // Note: GSearch/Islandora uses lowercase mods_ prefix and _ms (multivalued string) suffix!
   $solr_map = array(
       'title'       => 'fgs_label_s',
       'creator'     => 'dc.creator',
-      'subject'     => 'dc.subject',
-      'description' => 'MODS_abstract_ms',
-      'publisher'   => 'MODS_originInfo_publisher_ms',
+      'subject'     => 'mods_subject_topic_ms',
+      'description' => 'mods_abstract_ms',
+      'publisher'   => 'mods_originInfo_publisher_ms',
       'contributor' => 'dc.contributor',
-      'date'        => 'MODS_originInfo_dateIssued_s',
-      'type'        => 'MODS_genre_s',
+      'date'        => 'mods_originInfo_dateIssued_ms',
+      'type'        => 'mods_genre_ms',
       'format'      => 'dc.format',
-      'identifier'  => 'MODS_identifier_ms',
-      'source'      => 'mods_relatedItem_host_titleInfo_title_s',
-      'language'    => 'MODS_language_languageTerm_text_ms',
+      'identifier'  => 'dc.identifier',
+      'source'      => 'mods_relatedItem_host_titleInfo_title_ms',
+      'language'    => 'mods_language_languageTerm_code_ms',
       'relation'    => 'dc.relation',
       'coverage'    => 'dc.coverage',
       'rights'      => 'dc.rights'
