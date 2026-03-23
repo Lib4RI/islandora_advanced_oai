@@ -1,0 +1,6 @@
+name = OAI2A 1.20dev
+description = Custom OAI-PMH provider optimized for OpenAIRE v4 and Unpaywall. Uses SOlr, MODS and RELS-INT/-EXT parsing.
+core = 7.x
+package = Islandora
+dependencies[] = islandora
+version = 7.x-1.20dev
