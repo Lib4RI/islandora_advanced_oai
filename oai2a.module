@@ -258,6 +258,12 @@ function _oai2a_handle_list_formats($xml, $params) {
   $openaire->addChild('schema', 'https://www.openaire.eu/schema/repo-lit/4.0/openaire.xsd');
   $openaire->addChild('metadataNamespace', 'http://namespace.openaire.eu/schema/oaire/');
 
+  // Qualified Dublin Core
+  $qdc = $formats->addChild('metadataFormat');
+  $qdc->addChild('metadataPrefix', 'oai_qdc');
+  $qdc->addChild('schema', 'http://dublincore.org/schemas/xmls/qdc/2006/01/06/dcterms.xsd');
+  $qdc->addChild('metadataNamespace', 'http://purl.org/dc/terms/');
+
   // MODS
   $mods = $formats->addChild('metadataFormat');
   $mods->addChild('metadataPrefix', 'mods');
@@ -340,7 +346,7 @@ function _oai2a_handle_get_record($xml, $params) {
 
   // Generate Metadata: Pass empty array for solr_doc to trigger MODS fallback parsing
   // Check if the requested metadataPrefix is supported
-  $supported_prefixes = array('oai_dc', 'oai_openaire', 'mods');
+  $supported_prefixes = array('oai_dc', 'oai_openaire', 'mods', 'oai_qdc');
   if (!in_array($params['metadataPrefix'], $supported_prefixes)) {
       $xml->addChild('error', 'The metadataPrefix is not supported.')->addAttribute('code', 'cannotDisseminateFormat');
       return;
@@ -598,7 +604,15 @@ function _oai2a_handle_list_records($xml, $params) {
       'language'    => 'mods_language_languageTerm_code_ms',
       'relation'    => 'dc.relation',
       'coverage'    => 'dc.coverage',
-      'rights'      => 'dc.rights'
+      'rights'      => 'dc.rights',
+      // Additional fields for Qualified Dublin Core (dcterms)
+      'doi'            => 'mods_identifier_doi_ms',
+      'issn'           => 'mods_relatedItem_host_identifier_issn_ms',
+      'volume'         => 'mods_relatedItem_host_part_detail_volume_number_ms',
+      'start_page'     => 'mods_relatedItem_host_part_extent_start_ms',
+      'end_page'       => 'mods_relatedItem_host_part_extent_end_ms',
+      'journal_abbrev' => 'mods_relatedItem_host_titleInfo_abbreviated_title_ms',
+      'pub_status'     => 'mods_note_publicationStatus_ms',
   );
 
   // --- TOKEN HANDLING ---
@@ -1265,6 +1279,271 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     } else {
         $oai_dc->addChild('dc:rights', 'info:eu-repo/semantics/restrictedAccess', $dc_ns);
         $oai_dc->addChild('dc:rights', 'Restricted Access', $dc_ns);
+    }
+  }
+
+  // --- OAI_QDC FORMAT (Qualified Dublin Core / dcterms) ---
+  elseif ($prefix == 'oai_qdc') {
+    $dc_ns = 'http://purl.org/dc/elements/1.1/';
+    $dcterms_ns = 'http://purl.org/dc/terms/';
+    $xsi_ns = 'http://www.w3.org/2001/XMLSchema-instance';
+
+    // Build root element with proper namespaces via DOM
+    $dom_metadata = dom_import_simplexml($metadataNode);
+    $dom = $dom_metadata->ownerDocument;
+
+    $element = $dom->createElementNS($dcterms_ns, 'dcterms:qualifieddc');
+    $dom_metadata->appendChild($element);
+
+    $element->setAttributeNS('http://www.w3.org/2000/xmlns/', 'xmlns:dc', $dc_ns);
+    $element->setAttributeNS('http://www.w3.org/2000/xmlns/', 'xmlns:dcterms', $dcterms_ns);
+    $element->setAttributeNS('http://www.w3.org/2000/xmlns/', 'xmlns:xsi', $xsi_ns);
+    $element->setAttributeNS($xsi_ns, 'xsi:schemaLocation', 'http://purl.org/dc/terms/ http://dublincore.org/schemas/xmls/qdc/2006/01/06/dcterms.xsd');
+
+    $qdc = simplexml_import_dom($element);
+
+    if ($use_solr) {
+        // --- Title ---
+        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['title']) as $v)
+            $qdc->addChild('dc:title', htmlspecialchars($v), $dc_ns);
+
+        // --- Creator ---
+        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['creator']) as $v)
+            $qdc->addChild('dc:creator', htmlspecialchars($v), $dc_ns);
+
+        // --- Subject ---
+        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['subject']) as $v)
+            $qdc->addChild('dc:subject', htmlspecialchars($v), $dc_ns);
+
+        // --- Abstract (dcterms:abstract instead of dc:description) ---
+        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['description']) as $v)
+            $qdc->addChild('dcterms:abstract', htmlspecialchars($v), $dcterms_ns);
+
+        // --- Publisher ---
+        $publishers = _oai2a_get_solr_val($solr_doc, 'lib4ri_publisher_mt');
+        if (empty($publishers)) $publishers = _oai2a_get_solr_val($solr_doc, $solr_map['publisher']);
+        foreach ($publishers as $v)
+            $qdc->addChild('dc:publisher', htmlspecialchars($v), $dc_ns);
+
+        // --- Contributor ---
+        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['contributor']) as $v)
+            $qdc->addChild('dc:contributor', htmlspecialchars($v), $dc_ns);
+
+        // --- Date Issued (dcterms:issued instead of dc:date) ---
+        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['date']) as $v)
+            $qdc->addChild('dcterms:issued', htmlspecialchars($v), $dcterms_ns);
+
+        // --- Type ---
+        foreach (_oai2a_get_solr_val($solr_doc, 'mods_typeOfResource_ms') as $v)
+            $qdc->addChild('dc:type', htmlspecialchars($v), $dc_ns);
+        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['type']) as $v) {
+            $qdc->addChild('dc:type', htmlspecialchars($v), $dc_ns);
+            $driver_type = _oai2a_map_type_to_driver($v);
+            if ($driver_type) $qdc->addChild('dc:type', $driver_type, $dc_ns);
+        }
+
+        // --- Identifier: PID ---
+        $qdc->addChild('dc:identifier', htmlspecialchars($object->id), $dc_ns);
+
+        // --- Identifier: DOI (typed) ---
+        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['doi']) as $v)
+            $qdc->addChild('dcterms:identifier', 'doi:' . htmlspecialchars($v), $dcterms_ns);
+
+        // --- Identifier: ISSN (typed) ---
+        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['issn']) as $v)
+            $qdc->addChild('dcterms:identifier', 'issn:' . htmlspecialchars($v), $dcterms_ns);
+
+        // --- isPartOf: Journal/Book Title ---
+        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['source']) as $v)
+            $qdc->addChild('dcterms:isPartOf', htmlspecialchars($v), $dcterms_ns);
+
+        // --- Bibliographic Citation (constructed) ---
+        $abbrev = _oai2a_get_solr_val($solr_doc, $solr_map['journal_abbrev']);
+        $vol    = _oai2a_get_solr_val($solr_doc, $solr_map['volume']);
+        $sp     = _oai2a_get_solr_val($solr_doc, $solr_map['start_page']);
+        $ep     = _oai2a_get_solr_val($solr_doc, $solr_map['end_page']);
+        $date   = _oai2a_get_solr_val($solr_doc, $solr_map['date']);
+        if (!empty($abbrev) || !empty($vol) || !empty($sp)) {
+            $cite = !empty($abbrev) ? $abbrev[0] : '';
+            if (!empty($vol)) $cite .= ($cite ? ', ' : '') . 'Vol. ' . $vol[0];
+            if (!empty($sp)) {
+                $cite .= ($cite ? ', ' : '') . 'pp. ' . $sp[0];
+                if (!empty($ep)) $cite .= '-' . $ep[0];
+            }
+            if (!empty($date)) $cite .= ' (' . $date[0] . ')';
+            $qdc->addChild('dcterms:bibliographicCitation', htmlspecialchars($cite), $dcterms_ns);
+        }
+
+        // --- Language ---
+        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['language']) as $v)
+            $qdc->addChild('dc:language', htmlspecialchars($v), $dc_ns);
+
+        // --- Relation ---
+        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['relation']) as $v)
+            $qdc->addChild('dc:relation', htmlspecialchars($v), $dc_ns);
+
+        // --- Coverage ---
+        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['coverage']) as $v)
+            $qdc->addChild('dc:coverage', htmlspecialchars($v), $dc_ns);
+
+        // --- Rights ---
+        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['rights']) as $v)
+            $qdc->addChild('dc:rights', htmlspecialchars($v), $dc_ns);
+
+    } else {
+        // --- MODS FALLBACK for QDC ---
+
+        // Title
+        foreach ($mods_xml->xpath('//mods:titleInfo[not(ancestor::mods:relatedItem)]/mods:title') as $title) {
+            $v = trim((string)$title);
+            if ($v !== '') $qdc->addChild('dc:title', htmlspecialchars($v), $dc_ns);
+        }
+
+        // Creator / Contributor
+        foreach ($mods_xml->xpath('//mods:name') as $name) {
+            $fn = _oai2a_get_mods_fullname($name);
+            if (!$fn) continue;
+            $role = 'author';
+            $roles = $name->xpath('mods:role/mods:roleTerm');
+            if ($roles) {
+                foreach ($roles as $r) {
+                    $rt = strtolower(trim((string)$r));
+                    if ($rt === 'funder') { $role = 'funder'; break; }
+                    if (in_array($rt, array('editor', 'edt', 'contributor', 'supervisor', 'collaborator', 'thesis advisor', 'advisor', 'ths', 'degree supervisor', 'degree grantor'))
+                        || strpos($rt, 'advisor') !== false || strpos($rt, 'supervisor') !== false || strpos($rt, 'editor') !== false) {
+                        $role = 'contributor';
+                    }
+                }
+            }
+            if ($role === 'funder') continue;
+            if ($role === 'contributor') {
+                $qdc->addChild('dc:contributor', htmlspecialchars($fn), $dc_ns);
+            } else {
+                $qdc->addChild('dc:creator', htmlspecialchars($fn), $dc_ns);
+            }
+        }
+
+        // Issued Date
+        $d = $mods_xml->xpath('//mods:originInfo/mods:dateIssued');
+        if ($d && trim((string)$d[0]) !== '')
+            $qdc->addChild('dcterms:issued', htmlspecialchars(trim((string)$d[0])), $dcterms_ns);
+
+        // Subject
+        foreach ($mods_xml->xpath('//mods:subject/mods:topic') as $subject) {
+            $v = trim((string)$subject);
+            if ($v !== '') $qdc->addChild('dc:subject', htmlspecialchars($v), $dc_ns);
+        }
+
+        // Abstract
+        foreach ($mods_xml->xpath('//mods:abstract') as $desc) {
+            $v = trim((string)$desc);
+            if ($v !== '') $qdc->addChild('dcterms:abstract', htmlspecialchars($v), $dcterms_ns);
+        }
+
+        // Publisher
+        foreach ($mods_xml->xpath('//mods:originInfo/mods:publisher') as $pub) {
+            $v = trim((string)$pub);
+            if ($v !== '') $qdc->addChild('dc:publisher', htmlspecialchars($v), $dc_ns);
+        }
+
+        // Type
+        foreach ($mods_xml->xpath('//mods:typeOfResource') as $tor) {
+            $v = trim((string)$tor);
+            if ($v !== '') $qdc->addChild('dc:type', htmlspecialchars(ucfirst($v)), $dc_ns);
+        }
+        foreach ($mods_xml->xpath('//mods:genre') as $type) {
+            $type_str = trim((string)$type);
+            if ($type_str === '') continue;
+            $qdc->addChild('dc:type', htmlspecialchars($type_str), $dc_ns);
+            $driver_type = _oai2a_map_type_to_driver($type_str);
+            if ($driver_type) $qdc->addChild('dc:type', $driver_type, $dc_ns);
+        }
+
+        // Identifier (PID)
+        $qdc->addChild('dc:identifier', htmlspecialchars($object->id), $dc_ns);
+
+        // DOI
+        foreach ($mods_xml->xpath('//mods:identifier[@type="doi"]') as $id) {
+            $v = trim((string)$id);
+            if ($v !== '') $qdc->addChild('dcterms:identifier', 'doi:' . htmlspecialchars($v), $dcterms_ns);
+        }
+
+        // ISSN
+        foreach ($mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:identifier[@type="issn"]') as $id) {
+            $v = trim((string)$id);
+            if ($v !== '') $qdc->addChild('dcterms:identifier', 'issn:' . htmlspecialchars($v), $dcterms_ns);
+        }
+
+        // isPartOf (Journal title)
+        foreach ($mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:titleInfo/mods:title') as $src) {
+            $v = trim((string)$src);
+            if ($v !== '') $qdc->addChild('dcterms:isPartOf', htmlspecialchars($v), $dcterms_ns);
+        }
+
+        // Bibliographic Citation (constructed from MODS parts)
+        $abbrev_nodes = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:titleInfo[@type="abbreviated"]/mods:title');
+        $vol_nodes    = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:part/mods:detail[@type="volume"]/mods:number');
+        $sp_nodes     = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:part/mods:extent/mods:start');
+        $ep_nodes     = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:part/mods:extent/mods:end');
+        $cite = '';
+        if ($abbrev_nodes) $cite = trim((string)$abbrev_nodes[0]);
+        if ($vol_nodes) $cite .= ($cite ? ', ' : '') . 'Vol. ' . trim((string)$vol_nodes[0]);
+        if ($sp_nodes) {
+            $cite .= ($cite ? ', ' : '') . 'pp. ' . trim((string)$sp_nodes[0]);
+            if ($ep_nodes) $cite .= '-' . trim((string)$ep_nodes[0]);
+        }
+        if ($d && trim((string)$d[0]) !== '') $cite .= ' (' . trim((string)$d[0]) . ')';
+        if ($cite) $qdc->addChild('dcterms:bibliographicCitation', htmlspecialchars($cite), $dcterms_ns);
+
+        // Language
+        foreach ($mods_xml->xpath('//mods:language/mods:languageTerm') as $lang) {
+            $v = trim((string)$lang);
+            if ($v !== '') $qdc->addChild('dc:language', htmlspecialchars($v), $dc_ns);
+        }
+
+        // Coverage
+        foreach ($mods_xml->xpath('//mods:subject/mods:geographic') as $cov) {
+            $v = trim((string)$cov);
+            if ($v !== '') $qdc->addChild('dc:coverage', htmlspecialchars($v), $dc_ns);
+        }
+
+        // Rights
+        foreach ($mods_xml->xpath('//mods:accessCondition') as $rights) {
+            $v = trim((string)$rights);
+            if ($v !== '') $qdc->addChild('dc:rights', htmlspecialchars($v), $dc_ns);
+        }
+
+        // Relation
+        foreach ($mods_xml->xpath('//mods:relatedItem[not(@type="host")]/mods:titleInfo/mods:title') as $rel) {
+            $v = trim((string)$rel);
+            if ($v !== '') $qdc->addChild('dc:relation', htmlspecialchars($v), $dc_ns);
+        }
+    }
+
+    // PDF URL
+    if ($pdf_url) $qdc->addChild('dc:identifier', htmlspecialchars($pdf_url), $dc_ns);
+
+    // Access Rights (dcterms:accessRights)
+    if ($access_data['is_open_access']) {
+        $qdc->addChild('dcterms:accessRights', 'info:eu-repo/semantics/openAccess', $dcterms_ns);
+        $l = $access_data['license'] ? $access_data['license'] : 'Open Access';
+        $qdc->addChild('dc:rights', htmlspecialchars($l), $dc_ns);
+    } elseif ($access_data['embargo_end_date']) {
+        $qdc->addChild('dcterms:accessRights', 'info:eu-repo/semantics/embargoedAccess', $dcterms_ns);
+        $qdc->addChild('dc:rights', 'Embargo end date: ' . $access_data['embargo_end_date'], $dc_ns);
+    } else {
+        $qdc->addChild('dcterms:accessRights', 'info:eu-repo/semantics/restrictedAccess', $dcterms_ns);
+        $qdc->addChild('dc:rights', 'Restricted Access', $dc_ns);
+    }
+
+    // Version (DRIVER)
+    if (!empty($access_data['version'])) {
+        $v_lower = strtolower($access_data['version']);
+        if (strpos($v_lower, 'published') !== false) {
+            $qdc->addChild('dc:type', 'info:eu-repo/semantics/publishedVersion', $dc_ns);
+        } elseif (strpos($v_lower, 'accepted') !== false) {
+            $qdc->addChild('dc:type', 'info:eu-repo/semantics/acceptedVersion', $dc_ns);
+        }
     }
   }
 
