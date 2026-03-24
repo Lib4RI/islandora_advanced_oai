@@ -280,8 +280,25 @@ function _oai2a_handle_get_record($xml, $params) {
   $original_user = $user;
   $user = user_load(1);
 
+  // Convert OAI identifier to Fedora PID
+  // oai:dora:eawag_19000 → eawag:19000
+  $identifier = $params['identifier'];
+  if (strpos($identifier, 'oai:') === 0) {
+      $parts = explode(':', $identifier, 3);
+      if (count($parts) === 3) {
+          $local = $parts[2]; // eawag_19000
+          // Replace last underscore with colon to get Fedora PID
+          $pos = strrpos($local, '_');
+          if ($pos !== false) {
+              $identifier = substr($local, 0, $pos) . ':' . substr($local, $pos + 1);
+          } else {
+              $identifier = $local;
+          }
+      }
+  }
+
   try {
-      $object = islandora_object_load($params['identifier']);
+      $object = islandora_object_load($identifier);
       // --- CROSS-INSTITUTE SECURITY ---
       // This prevents a user on the /eawag/oai2a endpoint from retrieving records from /psi/.
       $institute = drupal_static('_oai2a_current_institute', 'all');
@@ -855,7 +872,10 @@ function _oai2a_handle_list_sets($xml, $params) {
  */
 function _oai2a_build_header($parent, $pid, $last_mod, $sets = array()) {
   $header = ($parent->getName() == 'header') ? $parent : $parent->addChild('header');
-  $header->addChild('identifier', htmlspecialchars($pid));
+  // OAI identifier format: oai:<repositoryIdentifier>:<localIdentifier>
+  // e.g., eawag:19000 → oai:dora:eawag_19000
+  $oai_id = 'oai:dora:' . str_replace(':', '_', $pid);
+  $header->addChild('identifier', htmlspecialchars($oai_id));
   if ($last_mod instanceof DateTime) $last_mod = $last_mod->format('Y-m-d\TH:i:s\Z');
   $header->addChild('datestamp', $last_mod);
 
@@ -1083,6 +1103,10 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         foreach (_oai2a_get_solr_val($solr_doc, $solr_map['date']) as $v)
             $oai_dc->addChild('dc:date', htmlspecialchars($v), $dc_ns);
 
+        // DCMI Type from typeOfResource (e.g., "Text")
+        foreach (_oai2a_get_solr_val($solr_doc, 'mods_typeOfResource_ms') as $v)
+            $oai_dc->addChild('dc:type', htmlspecialchars($v), $dc_ns);
+
         foreach (_oai2a_get_solr_val($solr_doc, $solr_map['type']) as $v) {
             $oai_dc->addChild('dc:type', htmlspecialchars($v), $dc_ns);
             // DRIVER 2.0: Map type to info:eu-repo URI
@@ -1170,6 +1194,11 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         foreach ($mods_xml->xpath('//mods:originInfo/mods:publisher') as $pub) {
             $v = trim((string)$pub);
             if ($v !== '') $oai_dc->addChild('dc:publisher', htmlspecialchars($v), $dc_ns);
+        }
+        // DCMI Type from typeOfResource (e.g., "Text")
+        foreach ($mods_xml->xpath('//mods:typeOfResource') as $tor) {
+            $v = trim((string)$tor);
+            if ($v !== '') $oai_dc->addChild('dc:type', htmlspecialchars(ucfirst($v)), $dc_ns);
         }
         foreach ($mods_xml->xpath('//mods:genre') as $type) {
             $type_str = trim((string)$type);
