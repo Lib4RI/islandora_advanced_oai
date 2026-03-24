@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OAI-PMH Endpoint Comparison Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Highlight.js for XML Syntax Highlighting -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/atom-one-dark-reasonable.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/languages/xml.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
+    
+    <style>
+        .xml-container { max-height: 75vh; overflow-y: auto; }
+        pre code { border-radius: 0.5rem; padding: 1.5rem !important; font-size: 0.9em; }
+        .tab-btn.active { border-bottom: 2px solid #3b82f6; color: #3b82f6; }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 font-sans h-screen flex flex-col">
+
+    <header class="bg-white shadow px-6 py-4 flex items-center justify-between">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900">OAI-PMH Comparison Dashboard</h1>
+            <p class="text-sm text-gray-500">DORA Development Server (lib4ri)</p>
+        </div>
+        
+        <div class="flex space-x-4 items-end">
+            <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">Institute</label>
+                <select id="institute" class="border-gray-300 rounded-md shadow-sm border p-2 text-sm focus:ring-blue-500 focus:border-blue-500">
+                    <option value="eawag">Eawag</option>
+                    <option value="empa">Empa</option>
+                    <option value="wsl">WSL</option>
+                    <option value="psi">PSI</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">Verb</label>
+                <select id="verb" class="border-gray-300 rounded-md shadow-sm border p-2 text-sm focus:ring-blue-500 focus:border-blue-500" onchange="handleVerbChange()">
+                    <option value="Identify">Identify</option>
+                    <option value="ListSets">ListSets</option>
+                    <option value="ListMetadataFormats">ListMetadataFormats</option>
+                    <option value="ListRecords">ListRecords</option>
+                    <option value="ListIdentifiers">ListIdentifiers</option>
+                    <option value="GetRecord">GetRecord</option>
+                </select>
+            </div>
+            <div id="prefix-wrapper" class="hidden">
+                <label class="block text-xs font-medium text-gray-700 mb-1">Metadata Prefix</label>
+                <select id="prefix" class="border-gray-300 rounded-md shadow-sm border p-2 text-sm focus:ring-blue-500 focus:border-blue-500">
+                    <option value="oai_dc">oai_dc (Simple)</option>
+                    <option value="oai_qdc">oai_qdc (Qualified)</option>
+                    <option value="oai_openaire">oai_openaire</option>
+                    <option value="mods">mods</option>
+                </select>
+            </div>
+            <div id="identifier-wrapper" class="hidden">
+                <label class="block text-xs font-medium text-gray-700 mb-1">Identifier</label>
+                <input type="text" id="identifier" placeholder="eawag:12345" class="border-gray-300 rounded-md shadow-sm border p-2 text-sm focus:ring-blue-500 focus:border-blue-500">
+            </div>
+            <button onclick="compareEndpoints()" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-md shadow-sm text-sm transition transition-colors">
+                Load & Compare
+            </button>
+        </div>
+    </header>
+
+    <main class="flex-1 flex p-6 gap-6 overflow-hidden">
+        <!-- OAI 2 (Legacy) Panel -->
+        <div class="w-1/2 flex flex-col bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+            <div class="bg-gray-100 px-4 py-3 border-b border-gray-200 flex justify-between items-center">
+                <h2 class="font-semibold text-gray-700">Legacy Endpoint (oai2)</h2>
+                <a id="link-old" href="#" target="_blank" class="text-xs text-blue-600 hover:underline">Open in new tab ↗</a>
+            </div>
+            <div id="loading-old" class="hidden flex-1 items-center justify-center text-gray-400">Loading...</div>
+            <div class="flex-1 xml-container bg-gray-900" id="content-old">
+                <pre><code class="language-xml" id="code-old">Select options and click "Load & Compare"</code></pre>
+            </div>
+        </div>
+
+        <!-- OAI 2A (New) Panel -->
+        <div class="w-1/2 flex flex-col bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+            <div class="bg-blue-50 px-4 py-3 border-b border-blue-200 flex justify-between items-center">
+                <h2 class="font-semibold text-blue-800">New Solr Endpoint (oai2a)</h2>
+                <a id="link-new" href="#" target="_blank" class="text-xs text-blue-600 hover:underline">Open in new tab ↗</a>
+            </div>
+            <div id="loading-new" class="hidden flex-1 items-center justify-center text-gray-400">Loading...</div>
+            <div class="flex-1 xml-container bg-gray-900" id="content-new">
+                <pre><code class="language-xml" id="code-new">Select options and click "Load & Compare"</code></pre>
+            </div>
+        </div>
+    </main>
+
+    <!-- Comparison Report Section -->
+    <section class="max-w-7xl mx-auto mt-6 px-4 pb-12">
+        <div class="bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+            <div class="bg-gray-50 px-4 py-3 border-b border-gray-200 flex justify-between items-center">
+                <h2 class="font-semibold text-gray-700">Full Comparison Report (All Institutes)</h2>
+                <div class="flex items-center space-x-4">
+                    <div class="flex items-center text-xs text-gray-500">
+                        <input type="checkbox" id="fresh-run" class="mr-1 rounded border-gray-300">
+                        <label for="fresh-run">Fresh Run (Clear Cache)</label>
+                    </div>
+                    <button onclick="runComparisonScript()" id="run-script-btn" class="text-xs bg-blue-600 hover:bg-blue-700 text-white py-1 px-3 rounded transition-colors flex items-center">
+                        <span id="run-btn-text">Run Comparison Script</span>
+                        <svg id="run-spinner" class="hidden animate-spin ml-2 h-3 w-3 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                    </button>
+                    <button onclick="toggleReport()" id="report-toggle-btn" class="text-xs bg-gray-200 hover:bg-gray-300 text-gray-700 py-1 px-3 rounded transition-colors">Show Report</button>
+                </div>
+            </div>
+            <div id="report-container" class="hidden">
+                <div class="p-4 bg-gray-900 border-t border-gray-800">
+                    <div id="run-status" class="hidden mb-4 p-3 bg-gray-800 border border-blue-900 rounded text-xs text-blue-300 font-mono overflow-auto max-h-40"></div>
+                    <pre><code class="language-text text-sm leading-relaxed text-gray-200 w-full inline-block" id="report-content" style="white-space: pre-wrap;">Click "Show Report" to load the latest comparison summary from compare_oai.py...</code></pre>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Architecture Section -->
+    <section class="max-w-7xl mx-auto mt-6 px-4 pb-12">
+        <div class="bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+            <div class="bg-blue-50 px-4 py-3 border-b border-blue-200 flex justify-between items-center">
+                <h2 class="font-semibold text-blue-800">System Architecture & Workflow</h2>
+                <button onclick="toggleArchitecture()" id="arch-toggle-btn" class="text-xs bg-blue-100 hover:bg-blue-200 text-blue-700 py-1 px-3 rounded transition-colors">Show Diagram</button>
+            </div>
+            <div id="arch-container" class="hidden">
+                <div class="p-8 bg-white flex flex-col items-center">
+                    <div id="mermaid-target" class="mermaid w-full flex justify-center">
+                        <!-- Diagram rendered here -->
+                    </div>
+                    <div id="arch-text" class="mt-8 prose prose-blue max-w-none text-gray-600 text-sm border-t pt-4 w-full">
+                        <!-- Text description rendered here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <script>
+        const BASE_DOMAIN = 'https://www.dora-dev.lib4ri.ch';
+
+        function handleVerbChange() {
+            const verb = document.getElementById('verb').value;
+            const prefixWrapper = document.getElementById('prefix-wrapper');
+            const idWrapper = document.getElementById('identifier-wrapper');
+            
+            // Show prefix for ListRecords, GetRecord, ListIdentifiers
+            if (['ListRecords', 'GetRecord', 'ListIdentifiers'].includes(verb)) {
+                prefixWrapper.classList.remove('hidden');
+            } else {
+                prefixWrapper.classList.add('hidden');
+            }
+            
+            // Show identifier only for GetRecord
+            if (verb === 'GetRecord') {
+                idWrapper.classList.remove('hidden');
+            } else {
+                idWrapper.classList.add('hidden');
+            }
+        }
+
+        // Format XML nicely using DomParser and XMLSerializer
+        function formatXml(xml) {
+            const PADDING = ' '.repeat(2);
+            const reg = /(>)(<)(\/*)/g;
+            let pad = 0;
+            xml = xml.replace(reg, '$1\r\n$2$3');
+            return xml.split('\r\n').map((node) => {
+                let indent = 0;
+                if (node.match( /.+<\/\w[^>]*>$/ )) {
+                    indent = 0;
+                } else if (node.match( /^<\/\w/ )) {
+                    if (pad != 0) pad -= 1;
+                } else if (node.match( /^<\w[^>]*[^\/]>.*$/ )) {
+                    indent = 1;
+                } else {
+                    indent = 0;
+                }
+                const formatted = PADDING.repeat(pad) + node;
+                pad += indent;
+                return formatted;
+            }).join('\r\n');
+        }
+
+        async function fetchEndpoint(url, codeElementId, loadingId) {
+            const codeEl = document.getElementById(codeElementId);
+            const loadEl = document.getElementById(loadingId);
+            const container = codeEl.parentElement.parentElement;
+            
+            codeEl.parentElement.classList.add('hidden');
+            loadEl.classList.remove('hidden');
+            loadEl.classList.add('flex');
+
+            try {
+                // Only pass strict OAI-PMH arguments. Legacy endpoints will reject custom `_ts` cache busters
+                const corsProxy = '/proxy?url=';
+                const fetchUrl = url;
+                
+                const response = await fetch(corsProxy + encodeURIComponent(fetchUrl), {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/xml' }
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP Error: ${response.status} ${response.statusText}`);
+                }
+                
+                const rawXml = await response.text();
+                const prettyXml = formatXml(rawXml);
+                
+                codeEl.textContent = prettyXml;
+                
+                // Trigger syntax highlighting
+                delete codeEl.dataset.highlighted;
+                hljs.highlightElement(codeEl);
+                
+                codeEl.parentElement.classList.remove('hidden');
+                loadEl.classList.add('hidden');
+                loadEl.classList.remove('flex');
+            } catch (error) {
+                console.error(error);
+                loadEl.classList.add('hidden');
+                loadEl.classList.remove('flex');
+                codeEl.parentElement.classList.remove('hidden');
+                
+                if (error.message.includes('Failed to fetch') || error.message.includes('CORS')) {
+                    // CORS Blocked or Network Error
+                    codeEl.textContent = `Error fetching data: ${error.message}\n\n` +
+                        `The DORA endpoint likely blocks CORS requests from local files.\n` +
+                        `Please click the "Open in new tab ↗" link above to view the XML directly.`;
+                } else {
+                    codeEl.textContent = `Error: ${error.message}`;
+                }
+                
+                // Clear highlight
+                codeEl.className = 'language-text';
+                delete codeEl.dataset.highlighted;
+                hljs.highlightElement(codeEl);
+            }
+        }
+
+        function buildUrls() {
+            const inst = document.getElementById('institute').value;
+            const verb = document.getElementById('verb').value;
+            const prefix = document.getElementById('prefix').value;
+            
+            let query = `?verb=${verb}`;
+            if (['ListRecords', 'GetRecord', 'ListIdentifiers'].includes(verb)) {
+                query += `&metadataPrefix=${prefix}`;
+            }
+            
+            if (verb === 'GetRecord') {
+                const id = document.getElementById('identifier').value || `${inst}:12345`;
+                query += `&identifier=${id}`;
+            }
+
+            const urlOld = `${BASE_DOMAIN}/${inst}/oai2${query}`;
+            const urlNew = `${BASE_DOMAIN}/${inst}/oai2a${query}`;
+            
+            return { urlOld, urlNew };
+        }
+
+        function compareEndpoints() {
+            const { urlOld, urlNew } = buildUrls();
+            
+            // Update Links
+            document.getElementById('link-old').href = urlOld;
+            document.getElementById('link-new').href = urlNew;
+            
+            // Fetch and render
+            fetchEndpoint(urlOld, 'code-old', 'loading-old');
+            fetchEndpoint(urlNew, 'code-new', 'loading-new');
+        }
+
+        async function toggleReport() {
+            const container = document.getElementById('report-container');
+            const content = document.getElementById('report-content');
+            const btn = document.getElementById('report-toggle-btn');
+            
+            if (container.classList.contains('hidden')) {
+                // Loading
+                btn.textContent = 'Loading...';
+                try {
+                    const response = await fetch('/report');
+                    if (!response.ok) throw new Error('Report not found or server error');
+                    const text = await response.text();
+                    content.textContent = text;
+                    container.classList.remove('hidden');
+                    btn.textContent = 'Hide Report';
+                } catch (err) {
+                    content.textContent = `Error: ${err.message}. Make sure compare_oai.py has been run.`;
+                    container.classList.remove('hidden');
+                    btn.textContent = 'Hide Report';
+                }
+            } else {
+                container.classList.add('hidden');
+                btn.textContent = 'Show Report';
+            }
+        }
+
+        async function runComparisonScript() {
+            const btn = document.getElementById('run-script-btn');
+            const btnText = document.getElementById('run-btn-text');
+            const spinner = document.getElementById('run-spinner');
+            const statusDiv = document.getElementById('run-status');
+            const fresh = document.getElementById('fresh-run').checked;
+            const reportContainer = document.getElementById('report-container');
+            const reportContent = document.getElementById('report-content');
+            
+            // UI State: Loading
+            btn.disabled = true;
+            btn.classList.add('opacity-75', 'cursor-not-allowed');
+            btnText.textContent = 'Running Script...';
+            spinner.classList.remove('hidden');
+            
+            statusDiv.classList.remove('hidden');
+            statusDiv.textContent = `[${new Date().toLocaleTimeString()}] Starting OAI comparison script (this may take several minutes)...\n`;
+            statusDiv.scrollTop = statusDiv.scrollHeight;
+
+            // Ensure reporter is visible to see feedback
+            reportContainer.classList.remove('hidden');
+            document.getElementById('report-toggle-btn').textContent = 'Hide Report';
+
+            try {
+                const response = await fetch(`/run-compare?fresh=${fresh}`);
+                const resultText = await response.text();
+                
+                statusDiv.textContent += `\n[${new Date().toLocaleTimeString()}] COMPLETED with status ${response.status}\n\n${resultText.split('STDERR:')[0]}`; // Show stdout summary
+                
+                if (response.ok) {
+                    statusDiv.classList.replace('text-blue-300', 'text-green-300');
+                    statusDiv.classList.replace('border-blue-900', 'border-green-900');
+                    // Refresh report content
+                    const reportResp = await fetch('/report');
+                    if (reportResp.ok) {
+                        reportContent.textContent = await reportResp.text();
+                    }
+                } else {
+                    statusDiv.classList.replace('text-blue-300', 'text-red-300');
+                    statusDiv.classList.replace('border-blue-900', 'border-red-900');
+                }
+            } catch (err) {
+                statusDiv.textContent += `\n[${new Date().toLocaleTimeString()}] FETCH ERROR: ${err.message}`;
+                statusDiv.classList.replace('text-blue-300', 'text-red-300');
+            } finally {
+                btn.disabled = false;
+                btn.classList.remove('opacity-75', 'cursor-not-allowed');
+                btnText.textContent = 'Run Comparison Script';
+                spinner.classList.add('hidden');
+                statusDiv.scrollTop = statusDiv.scrollHeight;
+            }
+        }
+
+        async function toggleArchitecture() {
+            const container = document.getElementById('arch-container');
+            const target = document.getElementById('mermaid-target');
+            const detail = document.getElementById('arch-text');
+            const btn = document.getElementById('arch-toggle-btn');
+            
+            if (container.classList.contains('hidden')) {
+                btn.textContent = 'Loading...';
+                try {
+                    const response = await fetch('/architecture');
+                    if (!response.ok) throw new Error('Architecture doc not found');
+                    const md = await response.text();
+                    
+                    // Basic extraction of Mermaid code block
+                    const mermaidMatch = md.match(/```mermaid([\s\S]*?)```/);
+                    if (mermaidMatch) {
+                        const code = mermaidMatch[1].trim();
+                        mermaid.initialize({ startOnLoad: false, theme: 'default' });
+                        try {
+                            const { svg } = await mermaid.render('mermaid-svg', code);
+                            target.innerHTML = svg;
+                        } catch(e) {
+                            target.innerHTML = `<pre class="mermaid bg-gray-100 p-4 text-xs">${code}</pre><div class="text-red-500 mt-2">Mermaid Render Error: ${e.message}</div>`;
+                        }
+                    }
+                    
+                    // Extract non-mermaid text for context
+                    const text = md.replace(/```mermaid[\s\S]*?```/g, '').trim();
+                    detail.innerHTML = text.split('\n').map(l => `<p class="mb-2">${l}</p>`).join('');
+                    
+                    container.classList.remove('hidden');
+                    btn.textContent = 'Hide Diagram';
+                } catch (err) {
+                    target.innerHTML = `<div class="text-red-500">Error: ${err.message}</div>`;
+                    container.classList.remove('hidden');
+                    btn.textContent = 'Hide Diagram';
+                }
+            } else {
+                container.classList.add('hidden');
+                btn.textContent = 'Show Diagram';
+            }
+        }
+
+        // Initialize display
+        handleVerbChange();
+    </script>
+</body>
+</html>

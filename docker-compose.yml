@@ -1,0 +1,13 @@
+services:
+  oai-dashboard:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount the current directory to allow the dashboard to read
+      # real-time updates to comparison_results.txt and checkpoints.
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+    stdin_open: true
+    tty: true

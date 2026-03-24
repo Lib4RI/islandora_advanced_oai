@@ -48,9 +48,15 @@ OAI2A provides four separate institute entry points:
 *   `GetRecord`: Retrieves a single record (validated against the endpoint's institute).
 *   `ListSets`: Lists collections belonging to the specific institute.
 
-## Verification & Auditing
+## Verification & Auditing (with Docker)
 
-The module includes a local dashboard for verification and regression testing:
+The easiest way to run the dashboard and auditing tools is via Docker:
+
+1.  **Start Dashboard:** `docker-compose up -d`
+2.  **Open Dashboard:** Navigate to `http://localhost:8080/oai_dashboard.html`.
+3.  **Run Comparison Audit:** (Inside or outside the container) `python compare_oai.py` will update the shared `comparison_results.txt` file which the dashboard watches.
+
+### Manual Setup (Without Docker)
 
 1.  **Start Proxy Server:** `python serve_dashboard.py` (serves and proxies OAI requests).
 2.  **Open Dashboard:** Navigate to `http://localhost:8080/oai_dashboard.html`.
