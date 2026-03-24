@@ -2,15 +2,14 @@
 
 A custom, high-performance OAI-PMH interface for Islandora 7 (Drupal 7) repositories, optimized for OpenAIRE v4.0 and Unpaywall compliance.
 
-## Key Features
-
 *   **Multi-Institute Support:** Provides separate, filtered entry points for **Eawag**, **Empa**, **WSL**, and **PSI**.
 *   **High Performance:** Uses direct, raw Solr queries to bypass Drupal's internal overhead for large-scale harvesting (`ListRecords`, `ListIdentifiers`).
 *   **Hybrid Metadata Fetching:**
     *   Fetches descriptive metadata from Solr for maximum speed.
     *   Fetches rights, licenses, and file versions from Fedora (`RELS-INT`/`RELS-EXT`) for precision.
-*   **OpenAIRE v4.0 Compliance:**
+*   **OpenAIRE v4.0 & QDC Compliance:**
     *   Full support for OpenAIRE metadata schema (`metadataPrefix=oai_openaire`).
+    *   **New:** Support for Qualified Dublin Core (`metadataPrefix=oai_qdc`) using `dcterms`.
     *   Automatic mapping of funding info, DOIs, and Resource Types.
 *   **Unpaywall & Open Access Optimization:**
     *   Exposes direct PDF datastream links.
@@ -44,13 +43,21 @@ OAI2A provides four separate institute entry points:
 ### Supported Verbs
 
 *   `Identify`: Returns repository information, including the specific institute name.
-*   `ListMetadataFormats`: Lists supported formats (oai_dc, oai_openaire, mods).
+*   `ListMetadataFormats`: Lists supported formats (oai_dc, oai_openaire, oai_qdc, mods).
 *   `ListRecords` / `ListIdentifiers`: Lists records filtered by the endpoint's institute namespace. Supports `from`, `until`, and `set` parameters.
 *   `GetRecord`: Retrieves a single record (validated against the endpoint's institute).
 *   `ListSets`: Lists collections belonging to the specific institute.
 
+## Verification & Auditing
+
+The module includes a local dashboard for verification and regression testing:
+
+1.  **Start Proxy Server:** `python serve_dashboard.py` (serves and proxies OAI requests).
+2.  **Open Dashboard:** Navigate to `http://localhost:8080/oai_dashboard.html`.
+3.  **Run Comparison Audit:** `python compare_oai.py` harvests every 20th record from legacy and modernized endpoints to generate a detailed diff report.
+
 ## Requirements
 
 *   Islandora 7.x (Drupal 7)
-*   PHP 5.6+
+*   PHP 5.6+ / 7.x
 *   Solr 4.x or later
