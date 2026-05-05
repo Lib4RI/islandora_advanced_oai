@@ -438,8 +438,8 @@ function _oai2a_handle_list_identifiers($xml, $params) {
 
   try {
       // Build the Direct HTTP Request
-      // We filter by Content Model (Citation/Publication)
-      $query_string = 'RELS_EXT_hasModel_uri_ms:"info:fedora/ir:citationCModel"';
+      // We filter by Content Model (Citation/Publication) and ensure it is public
+      $query_string = 'RELS_EXT_hasModel_uri_ms:"info:fedora/ir:citationCModel" AND RELS_EXT_isViewableByRole_literal_mt:"anonymous user"';
 
       // --- SOLR NAMESPACE FILTERING ---
       // Dynamically restrict results to the current institute using the PID field.
@@ -608,6 +608,8 @@ function _oai2a_handle_list_records($xml, $params) {
       // Additional fields for Qualified Dublin Core (dcterms)
       'doi'            => 'mods_identifier_doi_ms',
       'issn'           => 'mods_relatedItem_host_identifier_issn_ms',
+      'scopus'         => 'mods_identifier_scopus_ms',
+      'isbn'           => 'mods_identifier_isbn_ms',
       'volume'         => 'mods_relatedItem_host_part_detail_volume_number_ms',
       'start_page'     => 'mods_relatedItem_host_part_extent_start_ms',
       'end_page'       => 'mods_relatedItem_host_part_extent_end_ms',
@@ -672,8 +674,8 @@ function _oai2a_handle_list_records($xml, $params) {
 
   try {
       // Build the Direct HTTP Request
-      // We filter by Content Model (Citation/Publication)
-      $query_string = 'RELS_EXT_hasModel_uri_ms:"info:fedora/ir:citationCModel"';
+      // We filter by Content Model (Citation/Publication) and ensure it is public
+      $query_string = 'RELS_EXT_hasModel_uri_ms:"info:fedora/ir:citationCModel" AND RELS_EXT_isViewableByRole_literal_mt:"anonymous user"';
 
       // --- SOLR NAMESPACE FILTERING ---
       // Dynamically restrict results to the current institute using the PID field.
@@ -1353,6 +1355,17 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         foreach (_oai2a_get_solr_val($solr_doc, $solr_map['issn']) as $v)
             $qdc->addChild('dcterms:identifier', 'issn:' . htmlspecialchars($v), $dcterms_ns);
 
+        // --- Identifier: ISBN (typed) ---
+        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['isbn']) as $v)
+            $qdc->addChild('dcterms:identifier', 'isbn:' . htmlspecialchars($v), $dcterms_ns);
+        $host_isbn = _oai2a_get_solr_val($solr_doc, 'mods_relatedItem_host_identifier_isbn_ms');
+        foreach ($host_isbn as $v)
+            $qdc->addChild('dcterms:identifier', 'isbn:' . htmlspecialchars($v), $dcterms_ns);
+
+        // --- Identifier: Scopus EID (typed) ---
+        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['scopus']) as $v)
+            $qdc->addChild('dcterms:identifier', 'scopus:' . htmlspecialchars($v), $dcterms_ns);
+
         // --- isPartOf: Journal/Book Title ---
         foreach (_oai2a_get_solr_val($solr_doc, $solr_map['source']) as $v)
             $qdc->addChild('dcterms:isPartOf', htmlspecialchars($v), $dcterms_ns);
@@ -1472,6 +1485,18 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         foreach ($mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:identifier[@type="issn"]') as $id) {
             $v = trim((string)$id);
             if ($v !== '') $qdc->addChild('dcterms:identifier', 'issn:' . htmlspecialchars($v), $dcterms_ns);
+        }
+
+        // ISBN
+        foreach ($mods_xml->xpath('//mods:identifier[@type="isbn"] | //mods:relatedItem[@type="host"]/mods:identifier[@type="isbn"]') as $id) {
+            $v = trim((string)$id);
+            if ($v !== '') $qdc->addChild('dcterms:identifier', 'isbn:' . htmlspecialchars($v), $dcterms_ns);
+        }
+
+        // Scopus EID
+        foreach ($mods_xml->xpath('//mods:identifier[@type="scopus"]') as $id) {
+            $v = trim((string)$id);
+            if ($v !== '') $qdc->addChild('dcterms:identifier', 'scopus:' . htmlspecialchars($v), $dcterms_ns);
         }
 
         // isPartOf (Journal title)
