@@ -439,7 +439,7 @@ function _oai2a_handle_list_identifiers($xml, $params) {
   try {
       // Build the Direct HTTP Request
       // We filter by Content Model (Citation/Publication) and ensure it is public
-      $query_string = 'RELS_EXT_hasModel_uri_ms:"info:fedora/ir:citationCModel" AND RELS_EXT_isViewableByRole_literal_mt:"anonymous user"';
+      $query_string = 'RELS_EXT_hasModel_uri_ms:"info:fedora/ir:citationCModel" AND RELS_EXT_isViewableByRole_literal_ms:"anonymous user"';
 
       // --- SOLR NAMESPACE FILTERING ---
       // Dynamically restrict results to the current institute using the PID field.
@@ -675,7 +675,7 @@ function _oai2a_handle_list_records($xml, $params) {
   try {
       // Build the Direct HTTP Request
       // We filter by Content Model (Citation/Publication) and ensure it is public
-      $query_string = 'RELS_EXT_hasModel_uri_ms:"info:fedora/ir:citationCModel" AND RELS_EXT_isViewableByRole_literal_mt:"anonymous user"';
+      $query_string = 'RELS_EXT_hasModel_uri_ms:"info:fedora/ir:citationCModel" AND RELS_EXT_isViewableByRole_literal_ms:"anonymous user"';
 
       // --- SOLR NAMESPACE FILTERING ---
       // Dynamically restrict results to the current institute using the PID field.
