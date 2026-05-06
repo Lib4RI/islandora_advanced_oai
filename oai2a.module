@@ -311,6 +311,25 @@ function _oai2a_handle_get_record($xml, $params) {
       if ($institute !== 'all' && $object && strpos($object->id, $institute . ':') !== 0) {
           $object = null; // Deny access
       }
+
+      // --- PUBLIC VISIBILITY SECURITY ---
+      // Ensure the object is viewable by anonymous users according to Solr (which handles XACML inheritance)
+      if ($object) {
+          $solr_check_query = 'PID:"' . str_replace(':', '\\:', $object->id) . '" AND RELS_EXT_isViewableByRole_literal_ms:"anonymous user"';
+          $solr_url = oai2a_SOLR_URL . '/' . oai2a_SOLR_CORE . '/select';
+          $query_params = array('q' => $solr_check_query, 'rows' => 0, 'wt' => 'json');
+          $request_url = url($solr_url, array('query' => $query_params, 'absolute' => TRUE));
+          $response = drupal_http_request($request_url);
+          
+          if ($response->code == 200) {
+              $data = json_decode($response->data, true);
+              if (!isset($data['response']['numFound']) || $data['response']['numFound'] == 0) {
+                  $object = null; // Deny access, it's not public
+              }
+          } else {
+              $object = null; // Deny access on Solr error for safety
+          }
+      }
   } catch (Exception $e) {
       $object = null;
   }
