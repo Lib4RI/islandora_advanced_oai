@@ -26,18 +26,74 @@ define('oai2a_SOLR_CORE', 'collection1');
  */
 function oai2a_menu() {
   $items = array();
-  // Register path /oai2a — works for all institutes.
+  // Register path /oai2 — works for all institutes.
   // In a multi-site/subdirectory Drupal install (e.g., /eawag/, /empa/, ...),
-  // each institute has its own Drupal base URL, so the internal path is always 'oai2a'.
+  // each institute has its own Drupal base URL, so the internal path is always 'oai2'.
   // The institute is detected from the URL in oai2a_request_handler().
-  $items['oai2a'] = array(
+  $items['oai2'] = array(
     'title' => 'Advanced OAI-PMH Provider',
     'page callback' => 'oai2a_request_handler',
     'access arguments' => array('access content'),
     'type' => MENU_CALLBACK,
   );
 
+  $items['admin/islandora/tools/oai2'] = array(
+    'title' => 'Advanced OAI-PMH Provider',
+    'description' => 'Configure the Advanced OAI-PMH provider settings.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('oai2a_admin_settings_form'),
+    'access arguments' => array('administer site configuration'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+
   return $items;
+}
+
+/**
+ * Form builder for the OAI2A admin settings.
+ */
+function oai2a_admin_settings_form($form, &$form_state) {
+  $form['oai2a_base_url'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Base URL'),
+    '#description' => t('The base URL to report in OAI-PMH responses (e.g., in the Identify verb and request elements). If left blank, the module will automatically generate the URL based on the current request. Use this if your repository is behind a proxy and the automatically generated URL is incorrect. Example: http://www.example.com/oai2'),
+    '#default_value' => variable_get('oai2a_base_url', ''),
+  );
+
+  $form['oai2a_repository_name'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Repository Name'),
+    '#description' => t('The repository name reported in the Identify verb.'),
+    '#default_value' => variable_get('oai2a_repository_name', variable_get('site_name', 'Islandora Repository')),
+  );
+
+  $form['oai2a_admin_email'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Administrator Email'),
+    '#description' => t('The administrator email reported in the Identify verb.'),
+    '#default_value' => variable_get('oai2a_admin_email', variable_get('site_mail', 'admin@example.com')),
+  );
+
+  $form['oai2a_max_response_size'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Maximum Response Size'),
+    '#description' => t('The maximum number of records to return per page in ListRecords and ListIdentifiers.'),
+    '#default_value' => variable_get('oai2a_max_response_size', 50),
+    '#element_validate' => array('element_validate_integer_positive'),
+  );
+
+  return system_settings_form($form);
+}
+
+/**
+ * Helper: Retrieves the configured base URL, or falls back to default.
+ */
+function _oai2a_get_base_url() {
+  $configured_url = variable_get('oai2a_base_url', '');
+  if (!empty($configured_url)) {
+    return $configured_url;
+  }
+  return url('oai2', array('absolute' => TRUE));
 }
 
 /**
@@ -56,7 +112,7 @@ function oai2a_request_handler($institute = 'all') {
   // --- INSTITUTE CONTEXT ---
   // Detect institute from the raw server URL and Drupal's base_path().
   // In a multi-site/subdirectory Drupal install (e.g., /eawag/ is the base path),
-  // arg(0) only returns the internal Drupal path ('oai2a'), not the institute.
+  // arg(0) only returns the internal Drupal path ('oai2'), not the institute.
   // So we extract the institute from the base_path or REQUEST_URI instead.
   $valid_institutes = array('eawag', 'empa', 'wsl', 'psi');
 
@@ -113,7 +169,7 @@ function oai2a_request_handler($institute = 'all') {
 
   // Always use 'oai2a' as the Drupal internal path.
   // Drupal's url() automatically prepends the base path (e.g., /eawag/) in subdirectory installs.
-  $requestNode = $xml->addChild('request', url('oai2a', array('absolute' => TRUE)));
+  $requestNode = $xml->addChild('request', _oai2a_get_base_url());
   if (!empty($verb)) $requestNode->addAttribute('verb', $verb);
 
   // Validation: resumptionToken cannot be combined with metadataPrefix
@@ -197,11 +253,11 @@ function _oai2a_handle_identify($xml) {
 
   $identify = $xml->addChild('Identify');
   // Branding: Append institute name to repository name
-  $repo_name = variable_get('site_name', 'Islandora Repository') . ($institute !== 'all' ? ' (' . ucfirst($institute) . ')' : '');
+  $repo_name = variable_get('oai2a_repository_name', variable_get('site_name', 'Islandora Repository')) . ($institute !== 'all' ? ' (' . ucfirst($institute) . ')' : '');
   $identify->addChild('repositoryName', htmlspecialchars($repo_name));
-  $identify->addChild('baseURL', url('oai2a', array('absolute' => TRUE)));
+  $identify->addChild('baseURL', _oai2a_get_base_url());
   $identify->addChild('protocolVersion', '2.0');
-  $identify->addChild('adminEmail', variable_get('site_mail', 'admin@example.com'));
+  $identify->addChild('adminEmail', variable_get('oai2a_admin_email', variable_get('site_mail', 'admin@example.com')));
   $identify->addChild('earliestDatestamp', '2000-01-01T00:00:00Z');
   $identify->addChild('deletedRecord', 'no');
   $identify->addChild('granularity', 'YYYY-MM-DDThh:mm:ssZ');
@@ -214,7 +270,7 @@ function _oai2a_handle_identify($xml) {
   $oaiId->addAttribute('xsi:schemaLocation', 'http://www.openarchives.org/OAI/2.0/oai-identifier http://www.openarchives.org/OAI/2.0/oai-identifier.xsd', 'http://www.w3.org/2001/XMLSchema-instance');
 
   $oaiId->addChild('scheme', 'oai', 'http://www.openarchives.org/OAI/2.0/oai-identifier');
-  $host = parse_url(url('oai2a', array('absolute' => TRUE)), PHP_URL_HOST);
+  $host = parse_url(_oai2a_get_base_url(), PHP_URL_HOST);
   $oaiId->addChild('repositoryIdentifier', $host, 'http://www.openarchives.org/OAI/2.0/oai-identifier');
   $oaiId->addChild('delimiter', ':', 'http://www.openarchives.org/OAI/2.0/oai-identifier');
   $oaiId->addChild('sampleIdentifier', 'oai:' . $host . ':' . ($institute == 'all' ? 'all' : $institute) . ':1', 'http://www.openarchives.org/OAI/2.0/oai-identifier');
@@ -379,7 +435,7 @@ function _oai2a_handle_get_record($xml, $params) {
  * Uses Direct HTTP Solr Request for performance and robustness.
  */
 function _oai2a_handle_list_identifiers($xml, $params) {
-  $batch_size = 50; // Records per page
+  $batch_size = (int)variable_get('oai2a_max_response_size', 50); // Records per page
   $offset = 0;
   $prefix = '';
   $from = null;
@@ -598,7 +654,7 @@ function _oai2a_handle_list_identifiers($xml, $params) {
  * Uses Direct HTTP Solr Request for performance and robustness.
  */
 function _oai2a_handle_list_records($xml, $params) {
-  $batch_size = 50; // Records per page
+  $batch_size = (int)variable_get('oai2a_max_response_size', 50); // Records per page
   $offset = 0;
   $prefix = '';
   $from = null;
