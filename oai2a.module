@@ -215,7 +215,7 @@ function oai2a_request_handler($institute = 'all') {
   } catch (Exception $e) {
     // Security: Log detailed error to watchdog, show safe error to user
     watchdog('oai2a', 'Exception: @msg', array('@msg' => $e->getMessage()), WATCHDOG_ERROR);
-    $err = $xml->addChild('error', htmlspecialchars('An internal error occurred: ' . $e->getMessage()));
+    $err = $xml->addChild('error', 'An internal server error occurred.');
     $err->addAttribute('code', 'noRecordsMatch');
   }
 
@@ -533,21 +533,25 @@ function _oai2a_handle_list_identifiers($xml, $params) {
 
       // Date Filtering
       if ($from || $until) {
-          // Solr requires full ISO 8601 format (YYYY-MM-DDThh:mm:ssZ)
-          // If only YYYY-MM-DD is provided, we need to append time.
-          $f = $from ? $from : '*';
-          $u = $until ? $until : '*';
-
-          // Helper to ensure time is appended if missing
-          if ($f != '*' && strpos($f, 'T') === false) $f .= 'T00:00:00Z';
-          if ($u != '*' && strpos($u, 'T') === false) $u .= 'T23:59:59Z';
+          $f = '*';
+          if ($from) {
+              $time = strtotime($from);
+              $f = (strpos($from, 'T') !== false) ? gmdate('Y-m-d\TH:i:s\Z', $time) : gmdate('Y-m-d\T00:00:00\Z', $time);
+          }
+          $u = '*';
+          if ($until) {
+              $time = strtotime($until);
+              $u = (strpos($until, 'T') !== false) ? gmdate('Y-m-d\TH:i:s\Z', $time) : gmdate('Y-m-d\T23:59:59\Z', $time);
+          }
 
           $query_string .= ' AND fgs_lastModifiedDate_dt:[' . $f . ' TO ' . $u . ']';
       }
 
       // Set Filtering
       if ($set) {
-          $query_string .= ' AND RELS_EXT_isMemberOfCollection_uri_ms:"info:fedora/' . str_replace('_', ':', $set) . '"';
+          // Security: Prevent Solr injection by escaping quotes and backslashes
+          $safe_set = str_replace(array('\\', '"'), array('\\\\', '\\"'), $set);
+          $query_string .= ' AND RELS_EXT_isMemberOfCollection_uri_ms:"info:fedora/' . str_replace('_', ':', $safe_set) . '"';
       }
 
       // Construct field list (fl) from map to optimize performance
@@ -583,7 +587,8 @@ function _oai2a_handle_list_identifiers($xml, $params) {
       }
 
   } catch (Exception $e) {
-      $xml->addChild('error', htmlspecialchars('Solr Request failed: ' . $e->getMessage() . ' [URL: ' . $request_url . ']'))->addAttribute('code', 'noRecordsMatch');
+      watchdog('oai2a', 'Solr Request failed: @msg [URL: @url]', array('@msg' => $e->getMessage(), '@url' => $request_url), WATCHDOG_ERROR);
+      $xml->addChild('error', 'An internal server error occurred while retrieving records.')->addAttribute('code', 'noRecordsMatch');
       $user = $original_user;
       return;
   }
@@ -766,21 +771,25 @@ function _oai2a_handle_list_records($xml, $params) {
           $query_string .= ' AND PID:' . $institute . '\\:*';
       }
       if ($from || $until) {
-          // Solr requires full ISO 8601 format (YYYY-MM-DDThh:mm:ssZ)
-          // If only YYYY-MM-DD is provided, we need to append time.
-          $f = $from ? $from : '*';
-          $u = $until ? $until : '*';
-
-          // Helper to ensure time is appended if missing
-          if ($f != '*' && strpos($f, 'T') === false) $f .= 'T00:00:00Z';
-          if ($u != '*' && strpos($u, 'T') === false) $u .= 'T23:59:59Z';
+          $f = '*';
+          if ($from) {
+              $time = strtotime($from);
+              $f = (strpos($from, 'T') !== false) ? gmdate('Y-m-d\TH:i:s\Z', $time) : gmdate('Y-m-d\T00:00:00\Z', $time);
+          }
+          $u = '*';
+          if ($until) {
+              $time = strtotime($until);
+              $u = (strpos($until, 'T') !== false) ? gmdate('Y-m-d\TH:i:s\Z', $time) : gmdate('Y-m-d\T23:59:59\Z', $time);
+          }
 
           $query_string .= ' AND fgs_lastModifiedDate_dt:[' . $f . ' TO ' . $u . ']';
       }
 
       // Set Filtering
       if ($set) {
-          $query_string .= ' AND RELS_EXT_isMemberOfCollection_uri_ms:"info:fedora/' . str_replace('_', ':', $set) . '"';
+          // Security: Prevent Solr injection by escaping quotes and backslashes
+          $safe_set = str_replace(array('\\', '"'), array('\\\\', '\\"'), $set);
+          $query_string .= ' AND RELS_EXT_isMemberOfCollection_uri_ms:"info:fedora/' . str_replace('_', ':', $safe_set) . '"';
       }
 
       // Construct field list (fl) from map to optimize performance
@@ -819,7 +828,8 @@ function _oai2a_handle_list_records($xml, $params) {
       }
 
   } catch (Exception $e) {
-      $xml->addChild('error', htmlspecialchars('Solr Request failed: ' . $e->getMessage() . ' [URL: ' . $request_url . ']'))->addAttribute('code', 'noRecordsMatch');
+      watchdog('oai2a', 'Solr Request failed: @msg [URL: @url]', array('@msg' => $e->getMessage(), '@url' => $request_url), WATCHDOG_ERROR);
+      $xml->addChild('error', 'An internal server error occurred while retrieving records.')->addAttribute('code', 'noRecordsMatch');
       $user = $original_user;
       return;
   }
