@@ -173,10 +173,6 @@ function oai2a_request_handler($institute = 'all') {
   // Initialize the XML response structure
   $xml = new SimpleXMLElement('<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.openarchives.org/OAI/2.0/ http://www.openarchives.org/OAI/2.0/OAI-PMH.xsd"></OAI-PMH>');
   $xml->addChild('responseDate', gmdate('Y-m-d\TH:i:s\Z'));
-  // Add institute info as XML comment via DOM (SimpleXML has no addComment method)
-  $dom_root = dom_import_simplexml($xml);
-  $comment = $dom_root->ownerDocument->createComment(' Institute: ' . $institute . ' ');
-  $dom_root->appendChild($comment);
 
   // Always use 'oai2a' as the Drupal internal path.
   // Drupal's url() automatically prepends the base path (e.g., /eawag/) in subdirectory installs.
