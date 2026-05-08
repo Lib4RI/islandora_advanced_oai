@@ -28,9 +28,9 @@ function oai2a_menu() {
   $items = array();
   // Register path /oai2 — works for all institutes.
   // In a multi-site/subdirectory Drupal install (e.g., /eawag/, /empa/, ...),
-  // each institute has its own Drupal base URL, so the internal path is always 'oai2'.
+  // each institute has its own Drupal base URL, so the internal path is always 'oai2a'.
   // The institute is detected from the URL in oai2a_request_handler().
-  $path = variable_get('oai2a_endpoint_path', 'oai2');
+  $path = variable_get('oai2a_endpoint_path', 'oai2a');
   $items[$path] = array(
     'title' => 'Advanced OAI-PMH Provider',
     'page callback' => 'oai2a_request_handler',
@@ -58,8 +58,8 @@ function oai2a_admin_settings_form($form, &$form_state) {
     '#type' => 'textfield',
     '#title' => t('Path to the Repository'),
     '#field_prefix' => url('', array('absolute' => TRUE)),
-    '#description' => t('The URL path for this OAI-PMH endpoint (e.g. "oai2"). Changing this will instantly change the URL where the OAI-PMH interface is available.'),
-    '#default_value' => variable_get('oai2a_endpoint_path', 'oai2'),
+    '#description' => t('The URL path for this OAI-PMH endpoint (e.g. "oai2a"). Changing this will instantly change the URL where the OAI-PMH interface is available.'),
+    '#default_value' => variable_get('oai2a_endpoint_path', 'oai2a'),
     '#required' => TRUE,
   );
 
@@ -103,7 +103,7 @@ function oai2a_admin_settings_form_submit($form, &$form_state) {
  * Helper: Generates the base URL dynamically based on the configured endpoint path.
  */
 function _oai2a_get_base_url() {
-  $path = variable_get('oai2a_endpoint_path', 'oai2');
+  $path = variable_get('oai2a_endpoint_path', 'oai2a');
   return url($path, array('absolute' => TRUE));
 }
 
@@ -174,7 +174,7 @@ function oai2a_request_handler($institute = 'all') {
   $xml = new SimpleXMLElement('<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.openarchives.org/OAI/2.0/ http://www.openarchives.org/OAI/2.0/OAI-PMH.xsd"></OAI-PMH>');
   $xml->addChild('responseDate', gmdate('Y-m-d\TH:i:s\Z'));
 
-  // Always use 'oai2a' as the Drupal internal path.
+  // Always use the configured endpoint path as the Drupal internal path.
   // Drupal's url() automatically prepends the base path (e.g., /eawag/) in subdirectory installs.
   $requestNode = $xml->addChild('request', _oai2a_get_base_url());
   if (!empty($verb)) $requestNode->addAttribute('verb', $verb);
@@ -958,12 +958,21 @@ function _oai2a_handle_list_sets($xml, $params) {
                     $setName = isset($doc['fgs_label_s']) ? $doc['fgs_label_s'] : $doc['PID'];
                     $set->addChild('setName', htmlspecialchars($setName));
 
-                    if (isset($doc['dc.description'])) {
-                        $desc = is_array($doc['dc.description']) ? $doc['dc.description'][0] : $doc['dc.description'];
-                        // Optional: Add setDescription container if needed, but OAI-PMH allows description inside set?
-                        // Actually, setDescription is a container for extensible metadata.
-                        // For simplicity, we often skip it or put dc inside.
-                        // Let's skip setDescription for now to keep it simple and valid.
+                    if (isset($doc['dc.description']) || !empty($setName)) {
+                        $setDescription = $set->addChild('setDescription');
+                        $oai_dc = $setDescription->addChild('oai_dc:dc', null, 'http://www.openarchives.org/OAI/2.0/oai_dc/');
+                        
+                        $dc_ns = 'http://purl.org/dc/elements/1.1/';
+                        $oai_dc->addChild('dc:title', htmlspecialchars($setName), $dc_ns);
+                        
+                        if (isset($doc['dc.description'])) {
+                            $desc_val = is_array($doc['dc.description']) ? $doc['dc.description'][0] : $doc['dc.description'];
+                            $oai_dc->addChild('dc:description', htmlspecialchars($desc_val), $dc_ns);
+                        }
+                        
+                        // Add identifier (URL to collection)
+                        $col_url = url("islandora/object/" . $doc['PID'], array('absolute' => TRUE));
+                        $oai_dc->addChild('dc:identifier', htmlspecialchars($col_url), $dc_ns);
                     }
                 }
             }
@@ -1409,9 +1418,11 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         foreach (_oai2a_get_solr_val($solr_doc, $solr_map['subject']) as $v)
             $qdc->addChild('dc:subject', htmlspecialchars($v), $dc_ns);
 
-        // --- Abstract (dcterms:abstract instead of dc:description) ---
-        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['description']) as $v)
+        // --- Abstract (dcterms:abstract and dc:description) ---
+        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['description']) as $v) {
             $qdc->addChild('dcterms:abstract', htmlspecialchars($v), $dcterms_ns);
+            $qdc->addChild('dc:description', htmlspecialchars($v), $dc_ns);
+        }
 
         // --- Publisher ---
         $publishers = _oai2a_get_solr_val($solr_doc, 'lib4ri_publisher_mt');
@@ -1423,9 +1434,11 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         foreach (_oai2a_get_solr_val($solr_doc, $solr_map['contributor']) as $v)
             $qdc->addChild('dc:contributor', htmlspecialchars($v), $dc_ns);
 
-        // --- Date Issued (dcterms:issued instead of dc:date) ---
-        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['date']) as $v)
+        // --- Date Issued (dcterms:issued and dc:date) ---
+        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['date']) as $v) {
             $qdc->addChild('dcterms:issued', htmlspecialchars($v), $dcterms_ns);
+            $qdc->addChild('dc:date', htmlspecialchars($v), $dc_ns);
+        }
 
         // --- Type ---
         foreach (_oai2a_get_solr_val($solr_doc, 'mods_typeOfResource_ms') as $v)
@@ -1530,8 +1543,11 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
 
         // Issued Date
         $d = $mods_xml->xpath('//mods:originInfo/mods:dateIssued');
-        if ($d && trim((string)$d[0]) !== '')
-            $qdc->addChild('dcterms:issued', htmlspecialchars(trim((string)$d[0])), $dcterms_ns);
+        if ($d && trim((string)$d[0]) !== '') {
+            $val = htmlspecialchars(trim((string)$d[0]));
+            $qdc->addChild('dcterms:issued', $val, $dcterms_ns);
+            $qdc->addChild('dc:date', $val, $dc_ns);
+        }
 
         // Subject
         foreach ($mods_xml->xpath('//mods:subject/mods:topic') as $subject) {
@@ -1542,7 +1558,10 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         // Abstract
         foreach ($mods_xml->xpath('//mods:abstract') as $desc) {
             $v = trim((string)$desc);
-            if ($v !== '') $qdc->addChild('dcterms:abstract', htmlspecialchars($v), $dcterms_ns);
+            if ($v !== '') {
+                $qdc->addChild('dcterms:abstract', htmlspecialchars($v), $dcterms_ns);
+                $qdc->addChild('dc:description', htmlspecialchars($v), $dc_ns);
+            }
         }
 
         // Publisher
