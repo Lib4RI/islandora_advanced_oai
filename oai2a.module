@@ -82,7 +82,17 @@ function oai2a_admin_settings_form($form, &$form_state) {
     '#element_validate' => array('element_validate_integer_positive'),
   );
 
-  return system_settings_form($form);
+  $form = system_settings_form($form);
+  $form['#submit'][] = 'oai2a_admin_settings_form_submit';
+  return $form;
+}
+
+/**
+ * Custom submit handler for the OAI2A admin settings.
+ * Clears the OAI cache so new settings take effect immediately.
+ */
+function oai2a_admin_settings_form_submit($form, &$form_state) {
+  cache_clear_all('oai2a:', 'cache', TRUE);
 }
 
 /**
