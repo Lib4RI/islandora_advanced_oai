@@ -1704,15 +1704,9 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     $ns_dcterms  = 'http://purl.org/dc/terms/';
     $ns_rdf      = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
 
+    // SimpleXML auto-declares xmlns:* prefixes when addChild() receives the namespace URI.
+    // Do NOT use addAttribute('xmlns:*', ...) — it creates spurious plain attributes.
     $resource = $metadataNode->addChild('resource', null, $ns_oaire);
-    $resource->addAttribute('xmlns:dc',       $ns_dc);
-    $resource->addAttribute('xmlns:dcterms',  $ns_dcterms);
-    $resource->addAttribute('xmlns:datacite', $ns_datacite);
-    $resource->addAttribute('xmlns:rdf',      $ns_rdf);
-    $resource->addAttribute('xmlns:oaire',    $ns_oaire);
-    $resource->addAttribute('xsi:schemaLocation',
-      'http://namespace.openaire.eu/schema/oaire/ https://www.openaire.eu/schema/repo-lit/4.0/openaire.xsd',
-      'http://www.w3.org/2001/XMLSchema-instance');
 
     // --- MANDATORY: datacite:titles ---
     $title_results = $mods_xml->xpath('//mods:titleInfo/mods:title');
@@ -1773,8 +1767,8 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
             if (strpos($role_text, 'supervisor') !== false) $contributorType = 'Supervisor';
             $c->addAttribute('contributorType', $contributorType);
             $c->addChild('datacite:contributorName', htmlspecialchars($fullname), $ns_datacite);
-            if ($family) $c->addChild('datacite:familyName', htmlspecialchars($family), $ns_datacite);
             if ($given)  $c->addChild('datacite:givenName',  htmlspecialchars($given),  $ns_datacite);
+            if ($family) $c->addChild('datacite:familyName', htmlspecialchars($family), $ns_datacite);
             if ($orcid) {
                 $ni = $c->addChild('datacite:nameIdentifier', htmlspecialchars($orcid), $ns_datacite);
                 $ni->addAttribute('nameIdentifierScheme', 'ORCID');
@@ -1783,8 +1777,8 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         } else {
             $c = $creators_node->addChild('datacite:creator', null, $ns_datacite);
             $c->addChild('datacite:creatorName', htmlspecialchars($fullname), $ns_datacite);
-            if ($family) $c->addChild('datacite:familyName', htmlspecialchars($family), $ns_datacite);
             if ($given)  $c->addChild('datacite:givenName',  htmlspecialchars($given),  $ns_datacite);
+            if ($family) $c->addChild('datacite:familyName', htmlspecialchars($family), $ns_datacite);
             if ($orcid) {
                 $ni = $c->addChild('datacite:nameIdentifier', htmlspecialchars($orcid), $ns_datacite);
                 $ni->addAttribute('nameIdentifierScheme', 'ORCID');
@@ -1827,14 +1821,14 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         $primary_id->addAttribute('identifierType', 'DOI');
     } else {
         $primary_id = $resource->addChild('datacite:identifier', htmlspecialchars($object->id), $ns_datacite);
-        $primary_id->addAttribute('identifierType', 'Handle');
+        $primary_id->addAttribute('identifierType', 'HANDLE');
     }
 
     // --- RECOMMENDED: datacite:alternateIdentifiers ---
     $alt_ids = array();
     if ($doi) {
         // PID as alternate when DOI is primary
-        $alt_ids[] = array('type' => 'Handle', 'value' => $object->id);
+        $alt_ids[] = array('type' => 'HANDLE', 'value' => $object->id);
     }
     foreach ($mods_xml->xpath('//mods:identifier') as $modsid) {
         $type = strtolower(trim((string)$modsid->attributes()->type));
@@ -1858,10 +1852,14 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         }
     }
 
-    // --- MANDATORY: datacite:publicationYear ---
+    // --- RECOMMENDED: datacite:dates (Issued) ---
+    // Note: datacite:publicationYear is NOT a valid child of oaire:resource per the schema.
+    // Use datacite:dates with dateType="Issued" instead.
     $date_nodes = $mods_xml->xpath('//mods:originInfo/mods:dateIssued');
-    $pub_year = $date_nodes ? substr(trim((string)$date_nodes[0]), 0, 4) : gmdate('Y');
-    $resource->addChild('datacite:publicationYear', htmlspecialchars($pub_year), $ns_datacite);
+    $pub_date = $date_nodes ? trim((string)$date_nodes[0]) : gmdate('Y');
+    $dates_node = null; // will be created lazily when embargo date is added too
+    // Emit issued date (reuse the dates block created later if embargo also present)
+    $_dates_issued_val = $pub_date;
 
     // --- MANDATORY: dc:language ---
     $lang_nodes = $mods_xml->xpath('//mods:language/mods:languageTerm');
@@ -1881,18 +1879,11 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         }
     }
 
-    // --- RECOMMENDED: datacite:descriptions (Abstract) ---
-    $abstract_texts = array();
+    // --- RECOMMENDED: dc:description (Abstract) ---
+    // Note: datacite:descriptions is not in the oaire:resource schema; use dc:description instead.
     foreach ($mods_xml->xpath('//mods:abstract') as $abstract) {
         $v = trim((string)$abstract);
-        if ($v !== '') $abstract_texts[] = $v;
-    }
-    if (!empty($abstract_texts)) {
-        $descs_node = $resource->addChild('datacite:descriptions', null, $ns_datacite);
-        foreach ($abstract_texts as $at) {
-            $d = $descs_node->addChild('datacite:description', htmlspecialchars($at), $ns_datacite);
-            $d->addAttribute('descriptionType', 'Abstract');
-        }
+        if ($v !== '') $resource->addChild('dc:description', htmlspecialchars($v), $ns_dc);
     }
 
     // --- RECOMMENDED: dc:publisher ---
@@ -1937,11 +1928,13 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         }
     }
 
-    // --- MANDATORY IF APPLICABLE: datacite:dates (embargo end date) ---
+    // --- datacite:dates (Issued + Available/embargo) ---
+    $dates_node = $resource->addChild('datacite:dates', null, $ns_datacite);
+    $di = $dates_node->addChild('datacite:date', htmlspecialchars($_dates_issued_val), $ns_datacite);
+    $di->addAttribute('dateType', 'Issued');
     if ($access_data['embargo_end_date']) {
-        $dates_node = $resource->addChild('datacite:dates', null, $ns_datacite);
-        $d = $dates_node->addChild('datacite:date', htmlspecialchars($access_data['embargo_end_date']), $ns_datacite);
-        $d->addAttribute('dateType', 'Available');
+        $da = $dates_node->addChild('datacite:date', htmlspecialchars($access_data['embargo_end_date']), $ns_datacite);
+        $da->addAttribute('dateType', 'Available');
     }
 
     // --- MANDATORY IF APPLICABLE: oaire:file ---
