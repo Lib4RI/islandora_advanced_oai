@@ -58,9 +58,10 @@ function oai2a_admin_settings_form($form, &$form_state) {
     '#type' => 'textfield',
     '#title' => t('Path to the Repository'),
     '#field_prefix' => url('', array('absolute' => TRUE)),
-    '#description' => t('The URL path for this OAI-PMH endpoint (e.g. "oai2a"). Changing this will instantly change the URL where the OAI-PMH interface is available.'),
+    '#description' => t('The URL path for this OAI-PMH endpoint (e.g. "oai2a"). Only lowercase letters, digits, hyphens, and underscores are allowed.'),
     '#default_value' => variable_get('oai2a_endpoint_path', 'oai2a'),
     '#required' => TRUE,
+    '#element_validate' => array('_oai2a_validate_endpoint_path'),
   );
 
   $form['oai2a_repository_name'] = array(
@@ -88,6 +89,15 @@ function oai2a_admin_settings_form($form, &$form_state) {
   $form = system_settings_form($form);
   $form['#submit'][] = 'oai2a_admin_settings_form_submit';
   return $form;
+}
+
+/**
+ * Element validate callback for oai2a_endpoint_path.
+ */
+function _oai2a_validate_endpoint_path($element, &$form_state) {
+  if (!preg_match('/^[a-z0-9_-]+$/', $element['#value'])) {
+    form_error($element, t('The endpoint path may only contain lowercase letters, digits, hyphens, and underscores.'));
+  }
 }
 
 /**
@@ -158,8 +168,9 @@ function oai2a_request_handler($institute = 'all') {
   $params = drupal_get_query_parameters();
 
   // --- CACHING READ ---
-  // Create a unique cache ID based on the request parameters AND institute.
-  $cache_key = 'oai2a:' . $institute . ':' . md5(serialize($params));
+  // Only hash the defined OAI-PMH parameters to prevent cache flooding via arbitrary query vars.
+  $oai_params = array_intersect_key($params, array_flip(array('verb', 'metadataPrefix', 'from', 'until', 'set', 'identifier', 'resumptionToken')));
+  $cache_key = 'oai2a:' . $institute . ':' . md5(serialize($oai_params));
   $cache = cache_get($cache_key, 'cache');
 
   // If a valid cache entry exists, return it immediately.
@@ -383,7 +394,7 @@ function _oai2a_handle_get_record($xml, $params) {
           $query_params = array('q' => $solr_check_query, 'rows' => 0, 'wt' => 'json');
           $request_url = url($solr_url, array('query' => $query_params, 'absolute' => TRUE));
           $response = drupal_http_request($request_url);
-          
+
           if ($response->code == 200) {
               $data = json_decode($response->data, true);
               if (!isset($data['response']['numFound']) || $data['response']['numFound'] == 0) {
@@ -395,9 +406,9 @@ function _oai2a_handle_get_record($xml, $params) {
       }
   } catch (Exception $e) {
       $object = null;
+  } finally {
+      $user = $original_user;
   }
-
-  $user = $original_user;
 
   if (!$object) {
     $xml->addChild('error', 'The object does not exist or access is denied.')->addAttribute('code', 'idDoesNotExist');
@@ -472,7 +483,7 @@ function _oai2a_handle_list_identifiers($xml, $params) {
       $data_to_sign = $prefix_candidate . '|' . $offset_candidate . '|' . $from_candidate . '|' . $until_candidate . '|' . $set_candidate;
       $expected_signature = drupal_hmac_base64($institute . '|' . $data_to_sign, drupal_get_private_key());
 
-      if ($signature_provided !== $expected_signature) {
+      if (!hash_equals($expected_signature, $signature_provided)) {
            $xml->addChild('error', 'The resumptionToken has been tampered with.')->addAttribute('code', 'badResumptionToken');
            return;
       }
@@ -518,6 +529,7 @@ function _oai2a_handle_list_identifiers($xml, $params) {
   $total_count = 0;
   $request_url = '';
 
+  try { // outer: ensures $user is always restored
   try {
       // Build the Direct HTTP Request
       // We filter by Content Model (Citation/Publication) and ensure it is public
@@ -589,12 +601,10 @@ function _oai2a_handle_list_identifiers($xml, $params) {
   } catch (Exception $e) {
       watchdog('oai2a', 'Solr Request failed: @msg [URL: @url]', array('@msg' => $e->getMessage(), '@url' => $request_url), WATCHDOG_ERROR);
       $xml->addChild('error', 'An internal server error occurred while retrieving records.')->addAttribute('code', 'noRecordsMatch');
-      $user = $original_user;
       return;
   }
   // Handle No Results
   if (empty($solr_docs)) {
-    $user = $original_user;
     if ($offset == 0) {
         $xml->addChild('error', 'No records found in Solr.')->addAttribute('code', 'noRecordsMatch');
         return;
@@ -639,8 +649,6 @@ function _oai2a_handle_list_identifiers($xml, $params) {
     }
   }
 
-  $user = $original_user; // Reset User
-
   // --- TOKEN GENERATION ---
   $next_offset = $offset + $batch_size;
   $tokenNode = $listNode->addChild('resumptionToken');
@@ -658,6 +666,9 @@ function _oai2a_handle_list_identifiers($xml, $params) {
   } else {
       // Empty token = End of list
       $tokenNode[0] = '';
+  }
+  } finally {
+      $user = $original_user;
   }
 }
 
@@ -727,7 +738,7 @@ function _oai2a_handle_list_records($xml, $params) {
       $data_to_sign = $prefix_candidate . '|' . $offset_candidate . '|' . $from_candidate . '|' . $until_candidate . '|' . $set_candidate;
       $expected_signature = drupal_hmac_base64($institute . '|' . $data_to_sign, drupal_get_private_key());
 
-      if ($signature_provided !== $expected_signature) {
+      if (!hash_equals($expected_signature, $signature_provided)) {
            $xml->addChild('error', 'The resumptionToken has been tampered with.')->addAttribute('code', 'badResumptionToken');
            return;
       }
@@ -759,6 +770,7 @@ function _oai2a_handle_list_records($xml, $params) {
   $total_count = 0;
   $request_url = '';
 
+  try { // outer: ensures $user is always restored
   try {
       // Build the Direct HTTP Request
       // We filter by Content Model (Citation/Publication) and ensure it is public
@@ -830,12 +842,10 @@ function _oai2a_handle_list_records($xml, $params) {
   } catch (Exception $e) {
       watchdog('oai2a', 'Solr Request failed: @msg [URL: @url]', array('@msg' => $e->getMessage(), '@url' => $request_url), WATCHDOG_ERROR);
       $xml->addChild('error', 'An internal server error occurred while retrieving records.')->addAttribute('code', 'noRecordsMatch');
-      $user = $original_user;
       return;
   }
   // Handle No Results
   if (empty($solr_docs)) {
-    $user = $original_user;
     if ($offset == 0) {
         $xml->addChild('error', 'No records found in Solr.')->addAttribute('code', 'noRecordsMatch');
         return;
@@ -887,8 +897,6 @@ function _oai2a_handle_list_records($xml, $params) {
     }
   }
 
-  $user = $original_user; // Reset User
-
   // --- TOKEN GENERATION ---
   $next_offset = $offset + $batch_size;
   $tokenNode = $listNode->addChild('resumptionToken');
@@ -906,6 +914,9 @@ function _oai2a_handle_list_records($xml, $params) {
   } else {
       // Empty token = End of list
       $tokenNode[0] = '';
+  }
+  } finally {
+      $user = $original_user;
   }
 }
 
@@ -1935,4 +1946,20 @@ function _oai2a_build_citation($content, $style_s) {
     }
 
     return $content;
+}
+
+/**
+ * Implements hook_islandora_object_modified().
+ * Clears OAI cache when an object's metadata or XACML policy changes.
+ */
+function oai2a_islandora_object_modified($object) {
+  cache_clear_all('oai2a:', 'cache', TRUE);
+}
+
+/**
+ * Implements hook_islandora_datastream_modified().
+ * Clears OAI cache when a datastream (e.g. MODS, POLICY) is updated.
+ */
+function oai2a_islandora_datastream_modified($object, $datastream) {
+  cache_clear_all('oai2a:', 'cache', TRUE);
 }
