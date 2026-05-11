@@ -275,7 +275,7 @@ function _oai2a_handle_identify($xml) {
   $identify->addChild('repositoryName', htmlspecialchars($repo_name));
   $identify->addChild('baseURL', _oai2a_get_base_url());
   $identify->addChild('protocolVersion', '2.0');
-  $identify->addChild('adminEmail', variable_get('oai2a_admin_email', variable_get('site_mail', 'admin@example.com')));
+  $identify->addChild('adminEmail', htmlspecialchars(variable_get('oai2a_admin_email', variable_get('site_mail', 'admin@example.com'))));
   $identify->addChild('earliestDatestamp', '2000-01-01T00:00:00Z');
   $identify->addChild('deletedRecord', 'no');
   $identify->addChild('granularity', 'YYYY-MM-DDThh:mm:ssZ');
@@ -291,7 +291,7 @@ function _oai2a_handle_identify($xml) {
   $host = parse_url(_oai2a_get_base_url(), PHP_URL_HOST);
   $oaiId->addChild('repositoryIdentifier', $host, 'http://www.openarchives.org/OAI/2.0/oai-identifier');
   $oaiId->addChild('delimiter', ':', 'http://www.openarchives.org/OAI/2.0/oai-identifier');
-  $oaiId->addChild('sampleIdentifier', 'oai:' . $host . ':' . ($institute == 'all' ? 'all' : $institute) . ':1', 'http://www.openarchives.org/OAI/2.0/oai-identifier');
+  $oaiId->addChild('sampleIdentifier', 'oai:' . htmlspecialchars($host) . ':' . htmlspecialchars($institute == 'all' ? 'all' : $institute) . ':1', 'http://www.openarchives.org/OAI/2.0/oai-identifier');
 }
 /**
  * OAI Verb: ListMetadataFormats
@@ -308,9 +308,9 @@ function _oai2a_handle_list_formats($xml, $params) {
           $object = islandora_object_load($params['identifier']);
       } catch (Exception $e) {
           $object = null;
+      } finally {
+          $user = $original_user;
       }
-
-      $user = $original_user;
 
       if (!$object) {
           $xml->addChild('error', 'The object does not exist or access is denied.')->addAttribute('code', 'idDoesNotExist');
@@ -1022,31 +1022,63 @@ function _oai2a_analyze_access($object) {
   $content = $object['RELS-INT']->content;
   if (!$content) return $result;
 
-  $xml = new SimpleXMLElement($content);
+  try {
+      $xml = new SimpleXMLElement($content);
+  } catch (Exception $e) {
+      watchdog('oai2a', 'RELS-INT parse error for @pid: @msg', array('@pid' => $object->id, '@msg' => $e->getMessage()), WATCHDOG_WARNING);
+      return $result;
+  }
   $xml->registerXPathNamespace('rdf', 'http://www.w3.org/1999/02/22-rdf-syntax-ns#');
-  $xml->registerXPathNamespace('islandora', 'http://islandora.ca/ontology/relsint#');
+
+  // Collect all namespaces used in the document so we can read properties
+  // regardless of which namespace URI lib4ridora uses on this install.
+  $doc_namespaces = $xml->getDocNamespaces(true);
 
   $candidates = array();
 
-  // Find all datastreams (descriptions)
   foreach ($xml->xpath('//rdf:Description') as $desc) {
-      $about = (string)$desc->attributes('rdf', true)->about;
-      $dsid = substr($about, strrpos($about, '/') + 1);
+      // rdf:about gives "info:fedora/pid/DSID"
+      $about = (string)$desc->attributes('http://www.w3.org/1999/02/22-rdf-syntax-ns#')->about;
+      if (empty($about)) {
+          // Fallback: try prefix-based attribute access
+          $about = (string)$desc->attributes('rdf', true)->about;
+      }
+      $dsid = ($about !== '' && strrpos($about, '/') !== false)
+          ? substr($about, strrpos($about, '/') + 1)
+          : '';
 
-      // We only care about PDF files
       if (strpos($dsid, 'PDF') === false) continue;
 
-      $children = $desc->children('http://islandora.ca/ontology/relsint#');
-      $availability = (string)$children->{'lib4ridora-multi-embargo-availability'};
-      $version_text = (string)$children->{'lib4ridora-multi-embargo-document_version'};
-      $license_text = (string)$children->{'lib4ridora-multi-embargo-use_permission'};
-      $embargo_date = (string)$children->{'lib4ridora-multi-embargo-embargo_date'};
+      // Read embargo properties by local-name across ALL namespaces in the document.
+      // This tolerates namespace URI differences between lib4ridora installs.
+      $props = array(
+          'availability'     => '',
+          'document_version' => '',
+          'use_permission'   => '',
+          'embargo_date'     => '',
+      );
+      foreach ($doc_namespaces as $ns_uri) {
+          if (empty($ns_uri)) continue;
+          foreach ($desc->children($ns_uri) as $local_name => $val) {
+              $v = trim((string)$val);
+              if ($v === '') continue;
+              if (strpos($local_name, 'availability')     !== false) $props['availability']     = $v;
+              if (strpos($local_name, 'document_version') !== false) $props['document_version'] = $v;
+              if (strpos($local_name, 'use_permission')   !== false) $props['use_permission']   = $v;
+              if (strpos($local_name, 'embargo_date')     !== false) $props['embargo_date']     = $v;
+          }
+      }
 
-      // Determine if file is currently public
+      $availability = $props['availability'];
+      $version_text = $props['document_version'];
+      $license_text = $props['use_permission'];
+      $embargo_date = $props['embargo_date'];
+
       $is_public_now = false;
       if ($availability === 'public') {
           if (!empty($embargo_date)) {
-              if (time() >= strtotime($embargo_date)) $is_public_now = true;
+              $ts = strtotime($embargo_date);
+              if ($ts !== false && time() >= $ts) $is_public_now = true;
           } else {
               $is_public_now = true;
           }
@@ -1054,7 +1086,10 @@ function _oai2a_analyze_access($object) {
       $candidates[] = array('dsid' => $dsid, 'is_public_now' => $is_public_now, 'version' => $version_text, 'license' => $license_text, 'embargo_date' => $embargo_date, 'availability' => $availability);
   }
 
-  if (empty($candidates)) return $result;
+  if (empty($candidates)) {
+      watchdog('oai2a', 'RELS-INT for @pid has no PDF descriptions with embargo properties. Raw: @raw', array('@pid' => $object->id, '@raw' => substr($content, 0, 500)), WATCHDOG_DEBUG);
+      return $result;
+  }
 
   // Selection Strategy: Published > Accepted > Any Public
   $selected = null;
@@ -1069,6 +1104,7 @@ function _oai2a_analyze_access($object) {
               $result['access_rights_uri'] = 'http://purl.org/coar/access_right/c_f1cf'; // Embargoed
               $result['embargo_end_date'] = $c['embargo_date'];
               $result['version'] = $c['version'];
+              $result['best_dsid'] = $c['dsid']; // keep DSID so callers can build file URL
               return $result;
           }
       }
@@ -1102,7 +1138,7 @@ function _oai2a_map_version($version_text) {
     $v = strtolower($version_text);
     if (strpos($v, 'published') !== false) return 'http://purl.org/coar/version/c_970fb48d4fbd8a85'; // VoR
     if (strpos($v, 'accepted') !== false) return 'http://purl.org/coar/version/c_ab4af688f83e57aa'; // AM
-    if (strpos($v, 'submitted') !== false) return 'http://purl.org/coar/version/c_71e4c180996972fc'; // SM
+    if (strpos($v, 'submitted') !== false) return 'http://purl.org/coar/version/c_71e4c1898caa6e32'; // SMUR
     return null;
 }
 
@@ -1140,6 +1176,23 @@ function _oai2a_get_solr_val($doc, $field) {
 }
 
 /**
+ * Normalize a date string to the most precise valid W3CDTF token.
+ *
+ * Accepts Solr datetime strings (2021-06-15T00:00:00Z), plain dates
+ * (2021-06-15), year-month (2021-06), or year-only (2021).
+ * Returns the normalized value, or an empty string if unparseable.
+ */
+function _oai2a_w3cdtf_date($raw) {
+    $raw = trim($raw);
+    if ($raw === '') return '';
+    // Strip time component from ISO 8601 datetimes (e.g. 2021-06-15T00:00:00Z)
+    if (preg_match('/^(\d{4}-\d{2}-\d{2})T/', $raw, $m)) return $m[1];
+    // Already valid W3CDTF date tokens
+    if (preg_match('/^\d{4}(-\d{2}(-\d{2})?)?$/', $raw)) return $raw;
+    return '';
+}
+
+/**
  * Helper: Parses MODS name parts into a full name string.
  */
 function _oai2a_get_mods_fullname($name_node) {
@@ -1172,9 +1225,10 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
       if ($ext_data['is_open_access']) $access_data['is_open_access'] = true;
   }
 
-  // PDF Download URL
+  // PDF Download URL — built for open access; for embargoed items we still
+  // know the DSID so OpenAIRE can include the file location with restricted URI.
   $pdf_url = null;
-  if ($access_data['is_open_access'] && !empty($access_data['best_dsid'])) {
+  if (!empty($access_data['best_dsid'])) {
       $pdf_url = url("islandora/object/{$object->id}/datastream/{$access_data['best_dsid']}/view", array('absolute' => TRUE));
   }
 
@@ -1228,8 +1282,10 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         foreach (_oai2a_get_solr_val($solr_doc, $solr_map['contributor']) as $v)
             $oai_dc->addChild('dc:contributor', htmlspecialchars($v), $dc_ns);
 
-        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['date']) as $v)
-            $oai_dc->addChild('dc:date', htmlspecialchars($v), $dc_ns);
+        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['date']) as $v) {
+            $d = _oai2a_w3cdtf_date($v);
+            if ($d !== '') $oai_dc->addChild('dc:date', htmlspecialchars($d), $dc_ns);
+        }
 
         // DCMI Type from typeOfResource (e.g., "Text")
         foreach (_oai2a_get_solr_val($solr_doc, 'mods_typeOfResource_ms') as $v)
@@ -1309,7 +1365,7 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         }
 
         $d = $mods_xml->xpath('//mods:originInfo/mods:dateIssued');
-        if ($d && trim((string)$d[0]) !== '') $oai_dc->addChild('dc:date', htmlspecialchars(trim((string)$d[0])), $dc_ns);
+        if ($d) { $dv = _oai2a_w3cdtf_date((string)$d[0]); if ($dv !== '') $oai_dc->addChild('dc:date', htmlspecialchars($dv), $dc_ns); }
 
         foreach ($mods_xml->xpath('//mods:subject/mods:topic') as $subject) {
             $v = trim((string)$subject);
@@ -1370,7 +1426,7 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         }
     }
 
-    if ($pdf_url) $oai_dc->addChild('dc:identifier', htmlspecialchars($pdf_url), $dc_ns);
+    if ($pdf_url && $access_data['is_open_access']) $oai_dc->addChild('dc:identifier', htmlspecialchars($pdf_url), $dc_ns);
 
     // Add Version info to dc:type (DRIVER Guidelines)
     if (!empty($access_data['version'])) {
@@ -1447,8 +1503,11 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
 
         // --- Date Issued (dcterms:issued and dc:date) ---
         foreach (_oai2a_get_solr_val($solr_doc, $solr_map['date']) as $v) {
-            $qdc->addChild('dcterms:issued', htmlspecialchars($v), $dcterms_ns);
-            $qdc->addChild('dc:date', htmlspecialchars($v), $dc_ns);
+            $dv = _oai2a_w3cdtf_date($v);
+            if ($dv !== '') {
+                $qdc->addChild('dcterms:issued', htmlspecialchars($dv), $dcterms_ns);
+                $qdc->addChild('dc:date', htmlspecialchars($dv), $dc_ns);
+            }
         }
 
         // --- Type ---
@@ -1554,10 +1613,12 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
 
         // Issued Date
         $d = $mods_xml->xpath('//mods:originInfo/mods:dateIssued');
-        if ($d && trim((string)$d[0]) !== '') {
-            $val = htmlspecialchars(trim((string)$d[0]));
-            $qdc->addChild('dcterms:issued', $val, $dcterms_ns);
-            $qdc->addChild('dc:date', $val, $dc_ns);
+        if ($d) {
+            $dv = _oai2a_w3cdtf_date((string)$d[0]);
+            if ($dv !== '') {
+                $qdc->addChild('dcterms:issued', htmlspecialchars($dv), $dcterms_ns);
+                $qdc->addChild('dc:date', htmlspecialchars($dv), $dc_ns);
+            }
         }
 
         // Subject
@@ -1630,8 +1691,8 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         // Bibliographic Citation (constructed from MODS parts)
         $abbrev_nodes = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:titleInfo[@type="abbreviated"]/mods:title');
         $vol_nodes    = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:part/mods:detail[@type="volume"]/mods:number');
-        $sp_nodes     = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:part/mods:extent/mods:start');
-        $ep_nodes     = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:part/mods:extent/mods:end');
+        $sp_nodes     = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:part/mods:extent[@unit="page"]/mods:start');
+        $ep_nodes     = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:part/mods:extent[@unit="page"]/mods:end');
         $cite = '';
         if ($abbrev_nodes) $cite = trim((string)$abbrev_nodes[0]);
         if ($vol_nodes) $cite .= ($cite ? ', ' : '') . 'Vol. ' . trim((string)$vol_nodes[0]);
@@ -1668,7 +1729,7 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     }
 
     // PDF URL
-    if ($pdf_url) $qdc->addChild('dc:identifier', htmlspecialchars($pdf_url), $dc_ns);
+    if ($pdf_url && $access_data['is_open_access']) $qdc->addChild('dc:identifier', htmlspecialchars($pdf_url), $dc_ns);
 
     // Access Rights (dcterms:accessRights)
     if ($access_data['is_open_access']) {
@@ -1856,9 +1917,8 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     // Note: datacite:publicationYear is NOT a valid child of oaire:resource per the schema.
     // Use datacite:dates with dateType="Issued" instead.
     $date_nodes = $mods_xml->xpath('//mods:originInfo/mods:dateIssued');
-    $pub_date = $date_nodes ? trim((string)$date_nodes[0]) : gmdate('Y');
-    $dates_node = null; // will be created lazily when embargo date is added too
-    // Emit issued date (reuse the dates block created later if embargo also present)
+    $pub_date = $date_nodes ? _oai2a_w3cdtf_date((string)$date_nodes[0]) : '';
+    if ($pub_date === '') $pub_date = gmdate('Y');
     $_dates_issued_val = $pub_date;
 
     // --- MANDATORY: dc:language ---
@@ -1895,6 +1955,43 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     $journal_nodes = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:titleInfo/mods:title');
     if ($journal_nodes) {
         $resource->addChild('dc:source', htmlspecialchars(trim((string)$journal_nodes[0])), $ns_dc);
+    }
+
+    // --- RECOMMENDED: oaire:citation* fields ---
+    // Host title (journal or proceedings)
+    if ($journal_nodes) {
+        $resource->addChild('oaire:citationTitle', htmlspecialchars(trim((string)$journal_nodes[0])), $ns_oaire);
+    }
+    // Volume
+    $vol_nodes = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:part/mods:detail[@type="volume"]/mods:number');
+    if ($vol_nodes && trim((string)$vol_nodes[0]) !== '') {
+        $resource->addChild('oaire:citationVolume', htmlspecialchars(trim((string)$vol_nodes[0])), $ns_oaire);
+    }
+    // Issue
+    $issue_nodes = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:part/mods:detail[@type="issue"]/mods:number');
+    if ($issue_nodes && trim((string)$issue_nodes[0]) !== '') {
+        $resource->addChild('oaire:citationIssue', htmlspecialchars(trim((string)$issue_nodes[0])), $ns_oaire);
+    }
+    // Start / End page
+    $sp_nodes = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:part/mods:extent[@unit="page"]/mods:start');
+    $ep_nodes = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:part/mods:extent[@unit="page"]/mods:end');
+    if ($sp_nodes && trim((string)$sp_nodes[0]) !== '') {
+        $resource->addChild('oaire:citationStartPage', htmlspecialchars(trim((string)$sp_nodes[0])), $ns_oaire);
+    }
+    if ($ep_nodes && trim((string)$ep_nodes[0]) !== '') {
+        $resource->addChild('oaire:citationEndPage', htmlspecialchars(trim((string)$ep_nodes[0])), $ns_oaire);
+    }
+    // Conference-specific fields (Proceedings Papers)
+    // Conference date: stored in mods:originInfo/mods:dateOther[@type="conferenceDate"]
+    $conf_date_nodes = $mods_xml->xpath('//mods:originInfo/mods:dateOther[@type="conferenceDate"]');
+    if ($conf_date_nodes && trim((string)$conf_date_nodes[0]) !== '') {
+        $resource->addChild('oaire:citationConferenceDate', htmlspecialchars(trim((string)$conf_date_nodes[0])), $ns_oaire);
+    }
+    // Conference place: stored in mods:originInfo/mods:place/mods:placeTerm (first non-publisher originInfo)
+    // We pick the placeTerm that is NOT inside a relatedItem (i.e., top-level originInfo)
+    $conf_place_nodes = $mods_xml->xpath('//mods:originInfo[mods:place]/mods:place/mods:placeTerm[not(ancestor::mods:relatedItem)]');
+    if ($conf_place_nodes && trim((string)$conf_place_nodes[0]) !== '') {
+        $resource->addChild('oaire:citationConferencePlace', htmlspecialchars(trim((string)$conf_place_nodes[0])), $ns_oaire);
     }
 
     // --- MANDATORY: datacite:rights (access rights, COAR URI) ---
@@ -1938,6 +2035,8 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     }
 
     // --- MANDATORY IF APPLICABLE: oaire:file ---
+    // Include file URL for all items (open access and embargoed). The accessRightsURI attribute
+    // signals the embargo status to OpenAIRE harvesters; Fedora enforces actual download access.
     if ($pdf_url) {
         $file_el = $resource->addChild('oaire:file', htmlspecialchars($pdf_url), $ns_oaire);
         $file_el->addAttribute('accessRightsURI', $ar_uri);
