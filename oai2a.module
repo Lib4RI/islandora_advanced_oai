@@ -1076,12 +1076,11 @@ function _oai2a_analyze_access($object) {
 
       $is_public_now = false;
       if ($availability === 'public') {
-          if (!empty($embargo_date)) {
-              $ts = strtotime($embargo_date);
-              if ($ts !== false && time() >= $ts) $is_public_now = true;
-          } else {
-              $is_public_now = true;
-          }
+          $is_public_now = true;
+      } elseif ($availability === 'date' && !empty($embargo_date)) {
+          // "date" means embargoed until embargo_date; open once that date has passed.
+          $ts = strtotime($embargo_date);
+          if ($ts !== false && time() >= $ts) $is_public_now = true;
       }
       $candidates[] = array('dsid' => $dsid, 'is_public_now' => $is_public_now, 'version' => $version_text, 'license' => $license_text, 'embargo_date' => $embargo_date, 'availability' => $availability);
   }
@@ -1097,18 +1096,24 @@ function _oai2a_analyze_access($object) {
   if (!$selected) foreach ($candidates as $c) { if ($c['is_public_now'] && strpos(strtolower($c['version']), 'accepted') !== false) { $selected = $c; break; } }
   if (!$selected) foreach ($candidates as $c) { if ($c['is_public_now']) { $selected = $c; break; } }
 
-  // If nothing is open, check for future embargoes (for metadata purposes)
+  // If nothing is open, check for active (future) embargoes so we can expose the embargo date.
   if (!$selected) {
       foreach ($candidates as $c) {
-          if ($c['availability'] === 'public' && !empty($c['embargo_date'])) {
-              $result['access_rights_uri'] = 'http://purl.org/coar/access_right/c_f1cf'; // Embargoed
-              $result['embargo_end_date'] = $c['embargo_date'];
-              $result['version'] = $c['version'];
-              $result['best_dsid'] = $c['dsid']; // keep DSID so callers can build file URL
-              return $result;
+          // availability="date" with a future date = explicitly embargoed until that date.
+          if ($c['availability'] === 'date' && !empty($c['embargo_date'])) {
+              $ts = strtotime($c['embargo_date']);
+              if ($ts !== false && time() < $ts) {
+                  $raw_date = _oai2a_w3cdtf_date($c['embargo_date']);
+                  $result['access_rights_uri'] = 'http://purl.org/coar/access_right/c_f1cf'; // Embargoed
+                  $result['embargo_end_date'] = $raw_date !== '' ? $raw_date : $c['embargo_date'];
+                  $result['version'] = $c['version'];
+                  $result['license'] = $c['license'];
+                  $result['best_dsid'] = $c['dsid'];
+                  return $result;
+              }
           }
       }
-      return $result; // Restricted
+      return $result; // Restricted / intranet / private
   }
 
   // Found an open file
