@@ -1198,6 +1198,50 @@ function _oai2a_w3cdtf_date($raw) {
 }
 
 /**
+ * Extract funding references from mods:extension/mods:fundingReferences.
+ *
+ * Returns an array of associative arrays with keys:
+ *   funder_name, funder_id, funder_id_type, funding_stream, award_number, award_title
+ */
+function _oai2a_parse_funding_refs(SimpleXMLElement $mods_xml) {
+    $refs = array();
+    // Children of mods:extension inherit the MODS namespace as default.
+    $nodes = $mods_xml->xpath('//mods:extension/mods:fundingReferences/mods:fundingReference');
+    if (!$nodes) return $refs;
+
+    // Map lib4ri funderIdentifierType values to OAIRE schema vocabulary.
+    $id_type_map = array(
+        'crossref_funder' => 'Crossref Funder ID',
+        'crossref funder' => 'Crossref Funder ID',
+        'isni'            => 'ISNI',
+        'grid'            => 'GRID',
+    );
+
+    foreach ($nodes as $ref) {
+        $funder_name   = trim((string)$ref->funderName);
+        $funder_id     = trim((string)$ref->funderIdentifier);
+        $raw_id_type   = trim((string)$ref->funderIdentifier->attributes()->funderIdentifierType);
+        $funding_stream = trim((string)$ref->fundingStream);
+        $award_number  = trim((string)$ref->awardNumber);
+        $award_title   = trim((string)$ref->awardTitle);
+
+        $id_type_key  = strtolower(str_replace('_', ' ', $raw_id_type));
+        $funder_id_type = isset($id_type_map[$id_type_key]) ? $id_type_map[$id_type_key] : 'Other';
+
+        if ($funder_name === '') continue;
+        $refs[] = array(
+            'funder_name'    => $funder_name,
+            'funder_id'      => $funder_id,
+            'funder_id_type' => $funder_id_type,
+            'funding_stream' => $funding_stream,
+            'award_number'   => $award_number,
+            'award_title'    => $award_title,
+        );
+    }
+    return $refs;
+}
+
+/**
  * Helper: Parses MODS name parts into a full name string.
  */
 function _oai2a_get_mods_fullname($name_node) {
@@ -1428,6 +1472,13 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         foreach ($mods_xml->xpath('//mods:relatedItem[not(@type="host")]/mods:titleInfo/mods:title') as $rel) {
             $v = trim((string)$rel);
             if ($v !== '') $oai_dc->addChild('dc:relation', htmlspecialchars($v), $dc_ns);
+        }
+        // Funding: emit info:eu-repo/grantAgreement URIs per DRIVER/OpenAIRE convention
+        foreach (_oai2a_parse_funding_refs($mods_xml) as $fr) {
+            $grant_uri = 'info:eu-repo/grantAgreement/' . rawurlencode($fr['funder_name'])
+                . '/' . rawurlencode($fr['funding_stream'])
+                . '/' . rawurlencode($fr['award_number']);
+            $oai_dc->addChild('dc:relation', htmlspecialchars($grant_uri), $dc_ns);
         }
     }
 
@@ -1730,6 +1781,13 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         foreach ($mods_xml->xpath('//mods:relatedItem[not(@type="host")]/mods:titleInfo/mods:title') as $rel) {
             $v = trim((string)$rel);
             if ($v !== '') $qdc->addChild('dc:relation', htmlspecialchars($v), $dc_ns);
+        }
+        // Funding: emit info:eu-repo/grantAgreement URIs per DRIVER/OpenAIRE convention
+        foreach (_oai2a_parse_funding_refs($mods_xml) as $fr) {
+            $grant_uri = 'info:eu-repo/grantAgreement/' . rawurlencode($fr['funder_name'])
+                . '/' . rawurlencode($fr['funding_stream'])
+                . '/' . rawurlencode($fr['award_number']);
+            $qdc->addChild('dc:relation', htmlspecialchars($grant_uri), $dc_ns);
         }
     }
 
@@ -2050,17 +2108,24 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     }
 
     // --- MANDATORY IF APPLICABLE: oaire:fundingReferences ---
-    if (!empty($found_funders)) {
+    $funding_refs = _oai2a_parse_funding_refs($mods_xml);
+    if (!empty($funding_refs)) {
         $fundingRefs = $resource->addChild('oaire:fundingReferences', null, $ns_oaire);
-        foreach ($found_funders as $funder) {
-            $fullname = _oai2a_get_mods_fullname($funder);
-            if (!$fullname) continue;
+        foreach ($funding_refs as $fr) {
             $ref = $fundingRefs->addChild('oaire:fundingReference', null, $ns_oaire);
-            $ref->addChild('oaire:funderName', htmlspecialchars($fullname), $ns_oaire);
-            // Grant number if present in MODS
-            $grant_nodes = $funder->xpath('mods:nameIdentifier[@type="grant"]');
-            if ($grant_nodes) {
-                $ref->addChild('oaire:awardNumber', htmlspecialchars(trim((string)$grant_nodes[0])), $ns_oaire);
+            $ref->addChild('oaire:funderName', htmlspecialchars($fr['funder_name']), $ns_oaire);
+            if ($fr['funder_id'] !== '') {
+                $fi = $ref->addChild('oaire:funderIdentifier', htmlspecialchars($fr['funder_id']), $ns_oaire);
+                $fi->addAttribute('funderIdentifierType', $fr['funder_id_type']);
+            }
+            if ($fr['funding_stream'] !== '') {
+                $ref->addChild('oaire:fundingStream', htmlspecialchars($fr['funding_stream']), $ns_oaire);
+            }
+            if ($fr['award_number'] !== '') {
+                $ref->addChild('oaire:awardNumber', htmlspecialchars($fr['award_number']), $ns_oaire);
+            }
+            if ($fr['award_title'] !== '') {
+                $ref->addChild('oaire:awardTitle', htmlspecialchars($fr['award_title']), $ns_oaire);
             }
         }
     }
