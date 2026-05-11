@@ -563,7 +563,7 @@ function _oai2a_handle_list_identifiers($xml, $params) {
       if ($set) {
           // Security: Prevent Solr injection by escaping quotes and backslashes
           $safe_set = str_replace(array('\\', '"'), array('\\\\', '\\"'), $set);
-          $query_string .= ' AND RELS_EXT_isMemberOfCollection_uri_ms:"info:fedora/' . str_replace('_', ':', $safe_set) . '"';
+          $query_string .= ' AND RELS_EXT_isMemberOfCollection_uri_ms:"info:fedora/' . preg_replace('/_/', ':', $safe_set, 1) . '"';
       }
 
       // Construct field list (fl) from map to optimize performance
@@ -801,7 +801,7 @@ function _oai2a_handle_list_records($xml, $params) {
       if ($set) {
           // Security: Prevent Solr injection by escaping quotes and backslashes
           $safe_set = str_replace(array('\\', '"'), array('\\\\', '\\"'), $set);
-          $query_string .= ' AND RELS_EXT_isMemberOfCollection_uri_ms:"info:fedora/' . str_replace('_', ':', $safe_set) . '"';
+          $query_string .= ' AND RELS_EXT_isMemberOfCollection_uri_ms:"info:fedora/' . preg_replace('/_/', ':', $safe_set, 1) . '"';
       }
 
       // Construct field list (fl) from map to optimize performance
