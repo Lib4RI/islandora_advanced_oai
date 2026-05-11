@@ -1129,11 +1129,12 @@ function _oai2a_analyze_access($object) {
  * Maps text licenses (e.g. "CC BY") to standard URIs.
  */
 function _oai2a_map_license_to_uri($license_text) {
-    $map = array(
-        // Mapping removed as versions are unknown in DORA.
-    );
-    $key = trim(strtoupper($license_text));
-    return isset($map[$key]) ? $map[$key] : null;
+    // DORA does not record license version, so we cannot safely map abbreviations
+    // like "CC BY-NC" to a versioned URL (e.g. /4.0/) without asserting false information.
+    // Only map licenses that are already expressed as URLs in the source data.
+    $v = trim($license_text);
+    if (strpos($v, 'http') === 0) return $v;
+    return null;
 }
 
 /**
@@ -1446,8 +1447,20 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
             if ($v !== '') $oai_dc->addChild('dc:format', htmlspecialchars($v), $dc_ns);
         }
         foreach ($mods_xml->xpath('//mods:identifier') as $id) {
-            $v = trim((string)$id);
-            if ($v !== '') $oai_dc->addChild('dc:identifier', htmlspecialchars($v), $dc_ns);
+            $v   = trim((string)$id);
+            $type = strtolower(trim((string)$id->attributes()->type));
+            if ($v === '') continue;
+            if ($type === 'doi') {
+                // Sanitize and emit as resolvable URL — Unpaywall needs a URL, not a bare DOI.
+                $doi = preg_replace('/[?\s]+$/', '', $v); // strip trailing ? and whitespace
+                $oai_dc->addChild('dc:identifier', 'https://doi.org/' . htmlspecialchars($doi), $dc_ns);
+            } elseif ($type === 'uri' || $type === 'url' || strpos($v, 'http') === 0) {
+                $oai_dc->addChild('dc:identifier', htmlspecialchars($v), $dc_ns);
+            } elseif ($type === 'isbn' || $type === 'issn' || $type === 'pmid' || $type === 'pmcid') {
+                // Emit as plain identifier — informational, not a URL Unpaywall can follow.
+                $oai_dc->addChild('dc:identifier', htmlspecialchars($v), $dc_ns);
+            }
+            // Skip opaque local IDs (Scopus, WOS, internal serial numbers) — not useful for harvesters.
         }
         foreach ($mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:titleInfo/mods:title') as $src) {
             $v = trim((string)$src);
@@ -1495,16 +1508,21 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     }
 
     if ($access_data['is_open_access']) {
-        // DRIVER 2.0: Mandatory URI for Open Access
         $oai_dc->addChild('dc:rights', 'info:eu-repo/semantics/openAccess', $dc_ns);
-        $l = $access_data['license'] ? $access_data['license'] : 'Open Access';
-        $oai_dc->addChild('dc:rights', htmlspecialchars($l), $dc_ns);
+        $license_uri = _oai2a_map_license_to_uri($access_data['license']);
+        if ($license_uri) {
+            $oai_dc->addChild('dc:rights', $license_uri, $dc_ns);
+        } elseif ($access_data['license']) {
+            $oai_dc->addChild('dc:rights', htmlspecialchars($access_data['license']), $dc_ns);
+        }
     } elseif ($access_data['embargo_end_date']) {
         $oai_dc->addChild('dc:rights', 'info:eu-repo/semantics/embargoedAccess', $dc_ns);
-        $oai_dc->addChild('dc:rights', 'Embargo end date: ' . $access_data['embargo_end_date'], $dc_ns);
+        // Machine-readable embargo end date in W3CDTF format (Unpaywall and BASE recognise this).
+        $embargo_date = _oai2a_w3cdtf_date($access_data['embargo_end_date']);
+        if ($embargo_date === '') $embargo_date = $access_data['embargo_end_date'];
+        $oai_dc->addChild('dc:rights', 'info:eu-repo/date/embargoEnd/' . $embargo_date, $dc_ns);
     } else {
         $oai_dc->addChild('dc:rights', 'info:eu-repo/semantics/restrictedAccess', $dc_ns);
-        $oai_dc->addChild('dc:rights', 'Restricted Access', $dc_ns);
     }
   }
 
