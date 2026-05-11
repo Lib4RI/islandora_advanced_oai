@@ -1695,24 +1695,41 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
   }
 
   // --- OAI_OPENAIRE FORMAT ---
+  // Compliant with OpenAIRE Guidelines for Literature Repositories v4.0
+  // https://openaire-guidelines-for-literature-repository-managers.readthedocs.io/en/v4.0.0/
   elseif ($prefix == 'oai_openaire') {
-    // OpenAIRE requires deep parsing, so we mostly use MODS logic here.
+    $ns_oaire    = 'http://namespace.openaire.eu/schema/oaire/';
+    $ns_datacite = 'http://datacite.org/schema/kernel-4';
+    $ns_dc       = 'http://purl.org/dc/elements/1.1/';
+    $ns_dcterms  = 'http://purl.org/dc/terms/';
+    $ns_rdf      = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
 
-    $resource = $metadataNode->addChild('resource', null, 'http://namespace.openaire.eu/schema/oaire/');
-    $resource->addAttribute('xmlns:rdf', 'http://www.w3.org/1999/02/22-rdf-syntax-ns#');
-    $resource->addAttribute('xmlns:datacite', 'http://datacite.org/schema/kernel-4');
+    $resource = $metadataNode->addChild('resource', null, $ns_oaire);
+    $resource->addAttribute('xmlns:dc',       $ns_dc);
+    $resource->addAttribute('xmlns:dcterms',  $ns_dcterms);
+    $resource->addAttribute('xmlns:datacite', $ns_datacite);
+    $resource->addAttribute('xmlns:rdf',      $ns_rdf);
+    $resource->addAttribute('xmlns:oaire',    $ns_oaire);
+    $resource->addAttribute('xsi:schemaLocation',
+      'http://namespace.openaire.eu/schema/oaire/ https://www.openaire.eu/schema/repo-lit/4.0/openaire.xsd',
+      'http://www.w3.org/2001/XMLSchema-instance');
 
-    // Titles
+    // --- MANDATORY: datacite:titles ---
     $title_results = $mods_xml->xpath('//mods:titleInfo/mods:title');
-    $title = $title_results ? (string)$title_results[0] : '';
-    $titles = $resource->addChild('titles');
-    $titles->addChild('title', htmlspecialchars($title));
+    $title = $title_results ? trim((string)$title_results[0]) : '';
+    $subtitle_results = $mods_xml->xpath('//mods:titleInfo/mods:subTitle');
+    $titles = $resource->addChild('datacite:titles', null, $ns_datacite);
+    $titles->addChild('datacite:title', htmlspecialchars($title), $ns_datacite);
+    if ($subtitle_results) {
+        $st = $titles->addChild('datacite:title', htmlspecialchars(trim((string)$subtitle_results[0])), $ns_datacite);
+        $st->addAttribute('titleType', 'Subtitle');
+    }
 
-    // Creators and Contributors
-    $creators = $resource->addChild('creators');
-    $contributors = $resource->addChild('contributors');
+    // --- MANDATORY IF APPLICABLE: datacite:creators + datacite:contributors ---
+    $creators_node = $resource->addChild('datacite:creators', null, $ns_datacite);
+    $contributors_node = null;
     $found_funders = array();
-    $has_contributors = false;
+    $has_creators = false;
 
     foreach ($mods_xml->xpath('//mods:name') as $name) {
         $roles = $name->xpath('mods:role/mods:roleTerm');
@@ -1720,141 +1737,235 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         $is_contributor = false;
         $role_text = '';
 
-        if ($roles) {
-            foreach ($roles as $r) {
-                $rt = strtolower(trim((string)$r));
-                if ($rt == 'funder') {
-                    $is_funder = true;
-                    $found_funders[] = $name;
-                }
-                if (in_array($rt, array('editor', 'contributor', 'supervisor', 'collaborator'))) {
-                    $is_contributor = true;
-                    $role_text = $rt;
-                }
+        foreach ($roles as $r) {
+            $rt = strtolower(trim((string)$r));
+            if ($rt === 'funder') { $is_funder = true; $found_funders[] = $name; }
+            if (in_array($rt, array('editor', 'contributor', 'supervisor', 'collaborator'))) {
+                $is_contributor = true;
+                $role_text = $rt;
             }
         }
 
-        if (!$is_funder) {
-            $fullname = _oai2a_get_mods_fullname($name);
-            if ($fullname) {
-                if ($is_contributor) {
-                    $c = $contributors->addChild('contributor');
-                    $c->addChild('contributorName', htmlspecialchars($fullname));
-                    // Map generic roles to DataCite vocabulary
-                    $contributorType = 'Other';
-                    if (strpos($role_text, 'editor') !== false) $contributorType = 'Editor';
-                    if (strpos($role_text, 'supervisor') !== false) $contributorType = 'Supervisor';
-                    $c->addAttribute('contributorType', $contributorType);
-                    $has_contributors = true;
-                } else {
-                    $c = $creators->addChild('creator');
-                    $c->addChild('creatorName', htmlspecialchars($fullname));
-                }
+        if ($is_funder) continue;
+
+        $fullname = _oai2a_get_mods_fullname($name);
+        if (!$fullname) continue;
+
+        // ORCID
+        $orcid_nodes = $name->xpath('mods:nameIdentifier[@type="orcid"]');
+        $orcid = $orcid_nodes ? trim((string)$orcid_nodes[0]) : null;
+
+        // Affiliation
+        $aff_nodes = $name->xpath('mods:affiliation');
+        $affiliation = $aff_nodes ? trim((string)$aff_nodes[0]) : null;
+
+        // Family / Given split
+        $family_nodes = $name->xpath('mods:namePart[@type="family"]');
+        $given_nodes  = $name->xpath('mods:namePart[@type="given"]');
+        $family = $family_nodes ? trim((string)$family_nodes[0]) : '';
+        $given  = $given_nodes  ? trim((string)$given_nodes[0])  : '';
+
+        if ($is_contributor) {
+            if (!$contributors_node) $contributors_node = $resource->addChild('datacite:contributors', null, $ns_datacite);
+            $c = $contributors_node->addChild('datacite:contributor', null, $ns_datacite);
+            $contributorType = 'Other';
+            if (strpos($role_text, 'editor') !== false)     $contributorType = 'Editor';
+            if (strpos($role_text, 'supervisor') !== false) $contributorType = 'Supervisor';
+            $c->addAttribute('contributorType', $contributorType);
+            $c->addChild('datacite:contributorName', htmlspecialchars($fullname), $ns_datacite);
+            if ($family) $c->addChild('datacite:familyName', htmlspecialchars($family), $ns_datacite);
+            if ($given)  $c->addChild('datacite:givenName',  htmlspecialchars($given),  $ns_datacite);
+            if ($orcid) {
+                $ni = $c->addChild('datacite:nameIdentifier', htmlspecialchars($orcid), $ns_datacite);
+                $ni->addAttribute('nameIdentifierScheme', 'ORCID');
+                $ni->addAttribute('schemeURI', 'https://orcid.org');
             }
+        } else {
+            $c = $creators_node->addChild('datacite:creator', null, $ns_datacite);
+            $c->addChild('datacite:creatorName', htmlspecialchars($fullname), $ns_datacite);
+            if ($family) $c->addChild('datacite:familyName', htmlspecialchars($family), $ns_datacite);
+            if ($given)  $c->addChild('datacite:givenName',  htmlspecialchars($given),  $ns_datacite);
+            if ($orcid) {
+                $ni = $c->addChild('datacite:nameIdentifier', htmlspecialchars($orcid), $ns_datacite);
+                $ni->addAttribute('nameIdentifierScheme', 'ORCID');
+                $ni->addAttribute('schemeURI', 'https://orcid.org');
+            }
+            if ($affiliation) $c->addChild('datacite:affiliation', htmlspecialchars($affiliation), $ns_datacite);
+            $has_creators = true;
         }
     }
 
-    // Clean up empty tags (SimpleXML artifact)
-    if (!$has_contributors) unset($contributors[0]);
-
-    // Dates
-    $date = $mods_xml->xpath('//mods:originInfo/mods:dateIssued');
-    if ($date) $resource->addChild('publicationYear', substr((string)$date[0], 0, 4));
-    else $resource->addChild('publicationYear', gmdate('Y'));
-
-    // Publisher
-    $pub = $mods_xml->xpath('//mods:originInfo/mods:publisher');
-    if ($pub) $resource->addChild('publisher', htmlspecialchars((string)$pub[0]));
-    else $resource->addChild('publisher', htmlspecialchars(variable_get('site_name', 'Islandora Repository')));
-
-    // Language
-    $lang = $mods_xml->xpath('//mods:language/mods:languageTerm');
-    if ($lang) $resource->addChild('language', htmlspecialchars((string)$lang[0]));
-    else $resource->addChild('language', 'eng');
-
-    // Resource Type Mapping (COAR Vocabulary)
+    // --- MANDATORY: oaire:resourceType (COAR vocabulary) ---
     $genre_results = $mods_xml->xpath('//mods:genre');
-    $genre = $genre_results ? strtolower((string)$genre_results[0]) : '';
-    $type_uri = 'http://purl.org/coar/resource_type/c_6501'; $type_text = 'journal article';
-    if (strpos($genre, 'thesis') !== false || strpos($genre, 'dissertation') !== false) { $type_uri = 'http://purl.org/coar/resource_type/c_46ec'; $type_text = 'thesis'; }
-    elseif (strpos($genre, 'book') !== false && strpos($genre, 'chapter') === false) { $type_uri = 'http://purl.org/coar/resource_type/c_2f33'; $type_text = 'book'; }
-    elseif (strpos($genre, 'book') !== false && strpos($genre, 'chapter') !== false) { $type_uri = 'http://purl.org/coar/resource_type/c_3248'; $type_text = 'book part'; }
-    elseif (strpos($genre, 'report') !== false) { $type_uri = 'http://purl.org/coar/resource_type/c_93fc'; $type_text = 'report'; }
-    elseif (strpos($genre, 'conference') !== false) { $type_uri = 'http://purl.org/coar/resource_type/c_c94f'; $type_text = 'conference output'; }
-
-    $rt = $resource->addChild('resourceType', $type_text);
-    $rt->addAttribute('resourceTypeGeneral', 'Text');
+    $genre = $genre_results ? strtolower(trim((string)$genre_results[0])) : '';
+    $type_uri  = 'http://purl.org/coar/resource_type/c_6501';
+    $type_text = 'journal article';
+    if (strpos($genre, 'thesis') !== false || strpos($genre, 'dissertation') !== false) {
+        $type_uri = 'http://purl.org/coar/resource_type/c_46ec'; $type_text = 'thesis';
+    } elseif (strpos($genre, 'book chapter') !== false || (strpos($genre, 'book') !== false && strpos($genre, 'chapter') !== false)) {
+        $type_uri = 'http://purl.org/coar/resource_type/c_3248'; $type_text = 'book part';
+    } elseif (strpos($genre, 'book') !== false) {
+        $type_uri = 'http://purl.org/coar/resource_type/c_2f33'; $type_text = 'book';
+    } elseif (strpos($genre, 'report') !== false) {
+        $type_uri = 'http://purl.org/coar/resource_type/c_93fc'; $type_text = 'report';
+    } elseif (strpos($genre, 'conference') !== false || strpos($genre, 'proceedings') !== false) {
+        $type_uri = 'http://purl.org/coar/resource_type/c_5794'; $type_text = 'conference paper';
+    } elseif (strpos($genre, 'preprint') !== false) {
+        $type_uri = 'http://purl.org/coar/resource_type/c_816b'; $type_text = 'preprint';
+    } elseif (strpos($genre, 'review') !== false) {
+        $type_uri = 'http://purl.org/coar/resource_type/c_dcae04bc'; $type_text = 'review article';
+    }
+    $rt = $resource->addChild('oaire:resourceType', $type_text, $ns_oaire);
+    $rt->addAttribute('resourceTypeGeneral', 'literature');
     $rt->addAttribute('uri', $type_uri);
 
-    // Subjects
-    $subjects_node = null;
-    foreach ($mods_xml->xpath('//mods:subject/mods:topic') as $topic) {
-        if (!$subjects_node) $subjects_node = $resource->addChild('subjects');
-        $subjects_node->addChild('subject', htmlspecialchars((string)$topic));
+    // --- MANDATORY: datacite:identifier (primary — DOI preferred, else Handle) ---
+    $doi_nodes = $mods_xml->xpath('//mods:identifier[@type="doi"]');
+    $doi = $doi_nodes ? trim((string)$doi_nodes[0]) : null;
+    if ($doi) {
+        $primary_id = $resource->addChild('datacite:identifier', htmlspecialchars($doi), $ns_datacite);
+        $primary_id->addAttribute('identifierType', 'DOI');
+    } else {
+        $primary_id = $resource->addChild('datacite:identifier', htmlspecialchars($object->id), $ns_datacite);
+        $primary_id->addAttribute('identifierType', 'Handle');
     }
 
-    // Descriptions / Abstracts
-    $descriptions_node = null;
-    foreach ($mods_xml->xpath('//mods:abstract') as $abstract) {
-        if (!$descriptions_node) $descriptions_node = $resource->addChild('descriptions');
-        $d = $descriptions_node->addChild('description', htmlspecialchars((string)$abstract));
-        $d->addAttribute('descriptionType', 'Abstract');
+    // --- RECOMMENDED: datacite:alternateIdentifiers ---
+    $alt_ids = array();
+    if ($doi) {
+        // PID as alternate when DOI is primary
+        $alt_ids[] = array('type' => 'Handle', 'value' => $object->id);
     }
-
-    // Identifiers
-    $identifiers = $resource->addChild('identifiers');
     foreach ($mods_xml->xpath('//mods:identifier') as $modsid) {
-        $type = (string)$modsid->attributes()->type;
-        $val = trim((string)$modsid);
-        if (strtolower($type) == 'doi') {
-            $i = $identifiers->addChild('identifier', htmlspecialchars($val));
-            $i->addAttribute('identifierType', 'DOI');
+        $type = strtolower(trim((string)$modsid->attributes()->type));
+        $val  = trim((string)$modsid);
+        if ($val === '' || $type === 'doi') continue;
+        $type_map = array('isbn' => 'ISBN', 'issn' => 'ISSN', 'scopus' => 'scopus', 'pmid' => 'PMID', 'arxiv' => 'arXiv', 'urn' => 'URN', 'url' => 'URL');
+        if (isset($type_map[$type])) {
+            $alt_ids[] = array('type' => $type_map[$type], 'value' => $val);
         }
     }
-    // Handle
-    $i = $identifiers->addChild('identifier', $object->id);
-    $i->addAttribute('identifierType', 'Handle');
-
-    // PDF Link
-    if ($pdf_url) {
-        $i = $identifiers->addChild('identifier', htmlspecialchars($pdf_url));
-        $i->addAttribute('identifierType', 'URL');
+    // ISSN from host relatedItem
+    foreach ($mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:identifier[@type="issn"]') as $id) {
+        $v = trim((string)$id);
+        if ($v !== '') $alt_ids[] = array('type' => 'ISSN', 'value' => $v);
+    }
+    if (!empty($alt_ids)) {
+        $alt_node = $resource->addChild('datacite:alternateIdentifiers', null, $ns_datacite);
+        foreach ($alt_ids as $aid) {
+            $ai = $alt_node->addChild('datacite:alternateIdentifier', htmlspecialchars($aid['value']), $ns_datacite);
+            $ai->addAttribute('alternateIdentifierType', $aid['type']);
+        }
     }
 
-    // Versioning
+    // --- MANDATORY: datacite:publicationYear ---
+    $date_nodes = $mods_xml->xpath('//mods:originInfo/mods:dateIssued');
+    $pub_year = $date_nodes ? substr(trim((string)$date_nodes[0]), 0, 4) : gmdate('Y');
+    $resource->addChild('datacite:publicationYear', htmlspecialchars($pub_year), $ns_datacite);
+
+    // --- MANDATORY: dc:language ---
+    $lang_nodes = $mods_xml->xpath('//mods:language/mods:languageTerm');
+    $lang = $lang_nodes ? trim((string)$lang_nodes[0]) : 'eng';
+    $resource->addChild('dc:language', htmlspecialchars($lang), $ns_dc);
+
+    // --- RECOMMENDED: datacite:subjects ---
+    $subject_texts = array();
+    foreach ($mods_xml->xpath('//mods:subject/mods:topic') as $topic) {
+        $v = trim((string)$topic);
+        if ($v !== '') $subject_texts[] = $v;
+    }
+    if (!empty($subject_texts)) {
+        $subjects_node = $resource->addChild('datacite:subjects', null, $ns_datacite);
+        foreach ($subject_texts as $st) {
+            $subjects_node->addChild('datacite:subject', htmlspecialchars($st), $ns_datacite);
+        }
+    }
+
+    // --- RECOMMENDED: datacite:descriptions (Abstract) ---
+    $abstract_texts = array();
+    foreach ($mods_xml->xpath('//mods:abstract') as $abstract) {
+        $v = trim((string)$abstract);
+        if ($v !== '') $abstract_texts[] = $v;
+    }
+    if (!empty($abstract_texts)) {
+        $descs_node = $resource->addChild('datacite:descriptions', null, $ns_datacite);
+        foreach ($abstract_texts as $at) {
+            $d = $descs_node->addChild('datacite:description', htmlspecialchars($at), $ns_datacite);
+            $d->addAttribute('descriptionType', 'Abstract');
+        }
+    }
+
+    // --- RECOMMENDED: dc:publisher ---
+    $pub_nodes = $mods_xml->xpath('//mods:originInfo/mods:publisher');
+    $publisher = $pub_nodes ? trim((string)$pub_nodes[0]) : variable_get('site_name', 'Islandora Repository');
+    $resource->addChild('dc:publisher', htmlspecialchars($publisher), $ns_dc);
+
+    // --- OPTIONAL: dc:source (journal/host title) ---
+    $journal_nodes = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:titleInfo/mods:title');
+    if ($journal_nodes) {
+        $resource->addChild('dc:source', htmlspecialchars(trim((string)$journal_nodes[0])), $ns_dc);
+    }
+
+    // --- MANDATORY: datacite:rights (access rights, COAR URI) ---
+    // Access rights label and URI from COAR Access Rights vocabulary
+    if ($access_data['is_open_access']) {
+        $ar_label = 'open access';
+        $ar_uri   = 'http://purl.org/coar/access_right/c_abf2';
+    } elseif ($access_data['embargo_end_date']) {
+        $ar_label = 'embargoed access';
+        $ar_uri   = 'http://purl.org/coar/access_right/c_f1cf';
+    } else {
+        $ar_label = 'restricted access';
+        $ar_uri   = 'http://purl.org/coar/access_right/c_16ec';
+    }
+    $rights_el = $resource->addChild('datacite:rights', $ar_label, $ns_datacite);
+    $rights_el->addAttribute('rightsURI', $ar_uri);
+
+    // --- RECOMMENDED: oaire:licenseCondition ---
+    if ($access_data['is_open_access'] && !empty($access_data['license'])) {
+        $license_uri = _oai2a_map_license_to_uri($access_data['license']);
+        $lc = $resource->addChild('oaire:licenseCondition', htmlspecialchars($access_data['license']), $ns_oaire);
+        if ($license_uri) $lc->addAttribute('uri', $license_uri);
+    }
+
+    // --- RECOMMENDED: oaire:version (COAR Version Types vocabulary) ---
     if (!empty($access_data['version'])) {
         $version_uri = _oai2a_map_version($access_data['version']);
         if ($version_uri) {
-            $v = $resource->addChild('version', htmlspecialchars($access_data['version']));
+            $v = $resource->addChild('oaire:version', htmlspecialchars($access_data['version']), $ns_oaire);
             $v->addAttribute('uri', $version_uri);
         }
     }
 
-    // Funding
-    if (!empty($found_funders)) {
-        $fundingRefs = $resource->addChild('fundingReferences');
-        foreach ($found_funders as $funder) {
-            $ref = $fundingRefs->addChild('fundingReference');
-            $fullname = _oai2a_get_mods_fullname($funder);
-            if ($fullname) $ref->addChild('funderName', htmlspecialchars($fullname));
-        }
-    }
-
-    // Rights List
-    $rightsList = $resource->addChild('rightsList');
-    $r1 = $rightsList->addChild('rights', $access_data['is_open_access'] ? 'open access' : ($access_data['embargo_end_date'] ? 'embargoed access' : 'restricted access'));
-    $r1->addAttribute('rightsURI', $access_data['access_rights_uri']);
-
-    if ($access_data['is_open_access']) {
-        $license_uri = _oai2a_map_license_to_uri($access_data['license']);
-        if (!empty($access_data['license'])) {
-            $r2 = $rightsList->addChild('rights', htmlspecialchars($access_data['license']));
-            if ($license_uri) $r2->addAttribute('rightsURI', $license_uri);
-        }
-    }
-
+    // --- MANDATORY IF APPLICABLE: datacite:dates (embargo end date) ---
     if ($access_data['embargo_end_date']) {
-        $resource->addChild('dates')->addChild('date', $access_data['embargo_end_date'])->addAttribute('dateType', 'Available');
+        $dates_node = $resource->addChild('datacite:dates', null, $ns_datacite);
+        $d = $dates_node->addChild('datacite:date', htmlspecialchars($access_data['embargo_end_date']), $ns_datacite);
+        $d->addAttribute('dateType', 'Available');
+    }
+
+    // --- MANDATORY IF APPLICABLE: oaire:file ---
+    if ($pdf_url) {
+        $file_el = $resource->addChild('oaire:file', htmlspecialchars($pdf_url), $ns_oaire);
+        $file_el->addAttribute('accessRightsURI', $ar_uri);
+        $file_el->addAttribute('mimeType', 'application/pdf');
+        $file_el->addAttribute('objectType', 'fulltext');
+    }
+
+    // --- MANDATORY IF APPLICABLE: oaire:fundingReferences ---
+    if (!empty($found_funders)) {
+        $fundingRefs = $resource->addChild('oaire:fundingReferences', null, $ns_oaire);
+        foreach ($found_funders as $funder) {
+            $fullname = _oai2a_get_mods_fullname($funder);
+            if (!$fullname) continue;
+            $ref = $fundingRefs->addChild('oaire:fundingReference', null, $ns_oaire);
+            $ref->addChild('oaire:funderName', htmlspecialchars($fullname), $ns_oaire);
+            // Grant number if present in MODS
+            $grant_nodes = $funder->xpath('mods:nameIdentifier[@type="grant"]');
+            if ($grant_nodes) {
+                $ref->addChild('oaire:awardNumber', htmlspecialchars(trim((string)$grant_nodes[0])), $ns_oaire);
+            }
+        }
     }
   }
 
