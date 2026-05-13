@@ -251,6 +251,12 @@ function _oai2a_output($xml, $cache_key = false) {
     $dom = dom_import_simplexml($xml)->ownerDocument;
     $dom->preserveWhiteSpace = false;
     $dom->formatOutput = true;
+
+    // Add <?xml-stylesheet?> PI so browsers render the OAI-PMH response as XHTML.
+    $xsl_url = url(drupal_get_path('module', 'oai2a') . '/oai2.xsl', array('absolute' => TRUE));
+    $pi = $dom->createProcessingInstruction('xml-stylesheet', 'type="text/xsl" href="' . $xsl_url . '"');
+    $dom->insertBefore($pi, $dom->documentElement);
+
     $output = $dom->saveXML();
 
     // Cache for 1 hour (3600 seconds) if key is provided
