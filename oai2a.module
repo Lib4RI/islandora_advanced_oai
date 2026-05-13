@@ -1926,9 +1926,18 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     $ns_dcterms  = 'http://purl.org/dc/terms/';
     $ns_rdf      = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
 
-    // SimpleXML auto-declares xmlns:* prefixes when addChild() receives the namespace URI.
-    // Do NOT use addAttribute('xmlns:*', ...) — it creates spurious plain attributes.
-    $resource = $metadataNode->addChild('resource', null, $ns_oaire);
+    $ns_xsi = 'http://www.w3.org/2001/XMLSchema-instance';
+
+    // Build <resource> via DOM so we can set xsi:schemaLocation on the root element.
+    $dom = dom_import_simplexml($metadataNode)->ownerDocument;
+    $res_el = $dom->createElementNS($ns_oaire, 'resource');
+    $res_el->setAttributeNS('http://www.w3.org/2000/xmlns/', 'xmlns:xsi', $ns_xsi);
+    $res_el->setAttributeNS('http://www.w3.org/2000/xmlns/', 'xmlns:datacite', $ns_datacite);
+    $res_el->setAttributeNS('http://www.w3.org/2000/xmlns/', 'xmlns:dc', $ns_dc);
+    $res_el->setAttributeNS($ns_xsi, 'xsi:schemaLocation',
+        'http://namespace.openaire.eu/schema/oaire/ https://www.openaire.eu/schema/repo-lit/4.0/openaire.xsd');
+    dom_import_simplexml($metadataNode)->appendChild($res_el);
+    $resource = simplexml_import_dom($res_el);
 
     // --- MANDATORY: datacite:titles ---
     $title_results = $mods_xml->xpath('//mods:titleInfo/mods:title');
