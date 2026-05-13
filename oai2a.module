@@ -82,7 +82,7 @@ function oai2a_admin_settings_form($form, &$form_state) {
     '#type' => 'textfield',
     '#title' => t('Maximum Response Size'),
     '#description' => t('The maximum number of records to return per page in ListRecords and ListIdentifiers.'),
-    '#default_value' => variable_get('oai2a_max_response_size', 50),
+    '#default_value' => variable_get('oai2a_max_response_size', 100),
     '#element_validate' => array('element_validate_integer_positive'),
   );
 
@@ -165,7 +165,12 @@ function oai2a_request_handler($institute = 'all') {
   }
   libxml_use_internal_errors(true);
 
-  $params = drupal_get_query_parameters();
+  // OAI-PMH spec (section 2.2) requires support for both GET and POST.
+  if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $params = $_POST;
+  } else {
+    $params = drupal_get_query_parameters();
+  }
 
   // --- CACHING READ ---
   // Only hash the defined OAI-PMH parameters to prevent cache flooding via arbitrary query vars.
@@ -654,6 +659,7 @@ function _oai2a_handle_list_identifiers($xml, $params) {
   $tokenNode = $listNode->addChild('resumptionToken');
   $tokenNode->addAttribute('completeListSize', $total_count);
   $tokenNode->addAttribute('cursor', $offset);
+  $tokenNode->addAttribute('expirationDate', gmdate('Y-m-d\TH:i:s\Z', time() + 86400));
 
   if ($next_offset < $total_count) {
       // --- SECURE TOKEN GENERATION ---
@@ -902,6 +908,7 @@ function _oai2a_handle_list_records($xml, $params) {
   $tokenNode = $listNode->addChild('resumptionToken');
   $tokenNode->addAttribute('completeListSize', $total_count);
   $tokenNode->addAttribute('cursor', $offset);
+  $tokenNode->addAttribute('expirationDate', gmdate('Y-m-d\TH:i:s\Z', time() + 86400));
 
   if ($next_offset < $total_count) {
       // --- SECURE TOKEN GENERATION ---
