@@ -552,13 +552,14 @@ function _oai2a_handle_list_identifiers($xml, $params) {
       if ($from || $until) {
           $f = '*';
           if ($from) {
-              $time = strtotime($from);
-              $f = (strpos($from, 'T') !== false) ? gmdate('Y-m-d\TH:i:s\Z', $time) : gmdate('Y-m-d\T00:00:00\Z', $time);
+              // Parse day-only dates as UTC midnight to avoid server timezone shifting the boundary.
+              $time = strtotime(strpos($from, 'T') !== false ? $from : $from . 'T00:00:00Z');
+              $f = gmdate('Y-m-d\TH:i:s\Z', $time);
           }
           $u = '*';
           if ($until) {
-              $time = strtotime($until);
-              $u = (strpos($until, 'T') !== false) ? gmdate('Y-m-d\TH:i:s\Z', $time) : gmdate('Y-m-d\T23:59:59\Z', $time);
+              $time = strtotime(strpos($until, 'T') !== false ? $until : $until . 'T23:59:59Z');
+              $u = gmdate('Y-m-d\TH:i:s\Z', $time);
           }
 
           $query_string .= ' AND fgs_lastModifiedDate_dt:[' . $f . ' TO ' . $u . ']';
@@ -791,13 +792,14 @@ function _oai2a_handle_list_records($xml, $params) {
       if ($from || $until) {
           $f = '*';
           if ($from) {
-              $time = strtotime($from);
-              $f = (strpos($from, 'T') !== false) ? gmdate('Y-m-d\TH:i:s\Z', $time) : gmdate('Y-m-d\T00:00:00\Z', $time);
+              // Parse day-only dates as UTC midnight to avoid server timezone shifting the boundary.
+              $time = strtotime(strpos($from, 'T') !== false ? $from : $from . 'T00:00:00Z');
+              $f = gmdate('Y-m-d\TH:i:s\Z', $time);
           }
           $u = '*';
           if ($until) {
-              $time = strtotime($until);
-              $u = (strpos($until, 'T') !== false) ? gmdate('Y-m-d\TH:i:s\Z', $time) : gmdate('Y-m-d\T23:59:59\Z', $time);
+              $time = strtotime(strpos($until, 'T') !== false ? $until : $until . 'T23:59:59Z');
+              $u = gmdate('Y-m-d\TH:i:s\Z', $time);
           }
 
           $query_string .= ' AND fgs_lastModifiedDate_dt:[' . $f . ' TO ' . $u . ']';
