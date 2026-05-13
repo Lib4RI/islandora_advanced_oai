@@ -1199,6 +1199,86 @@ function _oai2a_w3cdtf_date($raw) {
 }
 
 /**
+ * Normalize a free-text conference date string to ISO 8601 / W3CDTF.
+ *
+ * Handles English, German, and Italian month names and three common patterns:
+ *   "DD-DD MonthName YYYY"        → YYYY-MM-DD/YYYY-MM-DD
+ *   "MonthName DD-DD, YYYY"       → YYYY-MM-DD/YYYY-MM-DD
+ *   "MonthName DD, YYYY"          → YYYY-MM-DD
+ *   "MonthName DD-MonthName DD, YYYY" → YYYY-MM-DD/YYYY-MM-DD
+ *
+ * Returns the original string unchanged if no pattern matches.
+ */
+function _oai2a_normalize_conference_date($raw) {
+    $raw = trim($raw);
+    if ($raw === '') return $raw;
+    // Already ISO 8601 — pass through unchanged.
+    if (preg_match('/^\d{4}-\d{2}-\d{2}(\/\d{4}-\d{2}-\d{2})?$/', $raw)) return $raw;
+
+    $month_map = array(
+        // English
+        'january'=>1,'february'=>2,'march'=>3,'april'=>4,'may'=>5,'june'=>6,
+        'july'=>7,'august'=>8,'september'=>9,'october'=>10,'november'=>11,'december'=>12,
+        // German (incl. short forms without umlaut encoding issues)
+        'januar'=>1,'februar'=>2,'marz'=>3,'maerz'=>3,'april'=>4,'mai'=>5,'juni'=>6,
+        'juli'=>7,'august'=>8,'september'=>9,'oktober'=>10,'november'=>11,'dezember'=>12,
+        // Italian
+        'gennaio'=>1,'febbraio'=>2,'marzo'=>3,'aprile'=>4,'maggio'=>5,'giugno'=>6,
+        'luglio'=>7,'agosto'=>8,'settembre'=>9,'ottobre'=>10,'novembre'=>11,'dicembre'=>12,
+        // French
+        'janvier'=>1,'fevrier'=>2,'mars'=>3,'avril'=>4,'juin'=>6,'juillet'=>7,
+        'aout'=>8,'octobre'=>10,
+    );
+
+    // Normalize: strip umlauts so ä→a, ö→o, ü→u, then lowercase.
+    $normalize_month = function($s) use ($month_map) {
+        $s = mb_strtolower(trim($s), 'UTF-8');
+        $s = str_replace(['ä','ö','ü','à','è','é'], ['a','o','u','a','e','e'], $s);
+        $s = preg_replace('/[^a-z]/', '', $s); // strip non-alpha
+        return isset($month_map[$s]) ? $month_map[$s] : null;
+    };
+
+    $fmt = function($y, $m, $d) {
+        return sprintf('%04d-%02d-%02d', (int)$y, (int)$m, (int)$d);
+    };
+
+    // Month token: letters including Latin-extended (covers umlauts, accents)
+    $mon = '[A-Za-z\x{c0}-\x{ff}]+';
+
+    // Pattern A: "DD[-. ]DD MonthName YYYY"  e.g. "12-15 February 1996", "12.-24. Juli 1998"
+    if (preg_match('/^(\d{1,2})\.?\s*[-–]\s*(\d{1,2})\.?\s+(' . $mon . ')\s+(\d{4})$/u', $raw, $m)) {
+        $mo = $normalize_month($m[3]);
+        if ($mo) {
+            $s = $fmt($m[4], $mo, $m[1]); $e = $fmt($m[4], $mo, $m[2]);
+            return $s === $e ? $s : "$s - $e";
+        }
+    }
+
+    // Pattern B: "MonthName DD-DD, YYYY"  e.g. "August 22-25, 2004"
+    if (preg_match('/^(' . $mon . ')\s+(\d{1,2})\s*[-–]\s*(\d{1,2}),?\s+(\d{4})$/u', $raw, $m)) {
+        $mo = $normalize_month($m[1]);
+        if ($mo) {
+            $s = $fmt($m[4], $mo, $m[2]); $e = $fmt($m[4], $mo, $m[3]);
+            return $s === $e ? $s : "$s - $e";
+        }
+    }
+
+    // Pattern C: "MonthName DD, YYYY"  e.g. "January 16, 2004"
+    if (preg_match('/^(' . $mon . ')\s+(\d{1,2}),?\s+(\d{4})$/u', $raw, $m)) {
+        $mo = $normalize_month($m[1]);
+        if ($mo) return $fmt($m[3], $mo, $m[2]);
+    }
+
+    // Pattern D: "MonthName DD-MonthName DD, YYYY"  e.g. "May 31-June 3, 2004"
+    if (preg_match('/^(' . $mon . ')\s+(\d{1,2})\s*[-–]\s*(' . $mon . ')\s+(\d{1,2}),?\s+(\d{4})$/u', $raw, $m)) {
+        $mo1 = $normalize_month($m[1]); $mo2 = $normalize_month($m[3]);
+        if ($mo1 && $mo2) return $fmt($m[5], $mo1, $m[2]) . ' - ' . $fmt($m[5], $mo2, $m[4]);
+    }
+
+    return $raw; // unparseable — return as-is rather than emit garbage
+}
+
+/**
  * Extract funding references from mods:extension/mods:fundingReferences.
  *
  * Returns an array of associative arrays with keys:
@@ -1940,6 +2020,8 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         $type_uri = 'http://purl.org/coar/resource_type/c_46ec'; $type_text = 'thesis';
     } elseif (strpos($genre, 'book chapter') !== false || (strpos($genre, 'book') !== false && strpos($genre, 'chapter') !== false)) {
         $type_uri = 'http://purl.org/coar/resource_type/c_3248'; $type_text = 'book part';
+    } elseif (strpos($genre, 'edited book') !== false || strpos($genre, 'edited volume') !== false) {
+        $type_uri = 'http://purl.org/coar/resource_type/c_2f33'; $type_text = 'edited book';
     } elseif (strpos($genre, 'book') !== false) {
         $type_uri = 'http://purl.org/coar/resource_type/c_2f33'; $type_text = 'book';
     } elseif (strpos($genre, 'report') !== false) {
@@ -1972,19 +2054,44 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         // PID as alternate when DOI is primary
         $alt_ids[] = array('type' => 'HANDLE', 'value' => $object->id);
     }
+    $alt_id_type_map = array(
+        'isbn'       => 'ISBN',
+        'issn'       => 'ISSN',
+        'e-issn'     => 'ISSN',
+        'eissn'      => 'ISSN',
+        'scopus'     => 'Scopus',
+        'pmid'       => 'PMID',
+        'pmcid'      => 'PMCID',
+        'arxiv'      => 'arXiv',
+        'urn'        => 'URN',
+        'url'        => 'URL',
+        'uri'        => 'URL',
+        'local'      => 'local',    // internal repository ID — valid per DataCite "local identifiers" guidance
+        'ut'         => 'WOS-UT',   // Web of Science UT accession number
+        'wos'        => 'WOS-UT',
+    );
+    $seen_alt_ids = array(); // deduplicate by (type, value)
     foreach ($mods_xml->xpath('//mods:identifier') as $modsid) {
         $type = strtolower(trim((string)$modsid->attributes()->type));
         $val  = trim((string)$modsid);
         if ($val === '' || $type === 'doi') continue;
-        $type_map = array('isbn' => 'ISBN', 'issn' => 'ISSN', 'scopus' => 'scopus', 'pmid' => 'PMID', 'arxiv' => 'arXiv', 'urn' => 'URN', 'url' => 'URL');
-        if (isset($type_map[$type])) {
-            $alt_ids[] = array('type' => $type_map[$type], 'value' => $val);
+        if (isset($alt_id_type_map[$type])) {
+            $key = $alt_id_type_map[$type] . '|' . $val;
+            if (!isset($seen_alt_ids[$key])) {
+                $alt_ids[] = array('type' => $alt_id_type_map[$type], 'value' => $val);
+                $seen_alt_ids[$key] = true;
+            }
         }
     }
-    // ISSN from host relatedItem
-    foreach ($mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:identifier[@type="issn"]') as $id) {
+    // ISSN from host relatedItem (deduplicated)
+    foreach ($mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:identifier[@type="issn" or @type="e-issn"]') as $id) {
         $v = trim((string)$id);
-        if ($v !== '') $alt_ids[] = array('type' => 'ISSN', 'value' => $v);
+        if ($v === '') continue;
+        $key = 'ISSN|' . $v;
+        if (!isset($seen_alt_ids[$key])) {
+            $alt_ids[] = array('type' => 'ISSN', 'value' => $v);
+            $seen_alt_ids[$key] = true;
+        }
     }
     if (!empty($alt_ids)) {
         $alt_node = $resource->addChild('datacite:alternateIdentifiers', null, $ns_datacite);
@@ -2062,11 +2169,20 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     if ($ep_nodes && trim((string)$ep_nodes[0]) !== '') {
         $resource->addChild('oaire:citationEndPage', htmlspecialchars(trim((string)$ep_nodes[0])), $ns_oaire);
     }
+    // Edition: stored in mods:originInfo/mods:edition or relatedItem/mods:originInfo/mods:edition
+    $edition_nodes = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:originInfo/mods:edition');
+    if (!$edition_nodes) {
+        $edition_nodes = $mods_xml->xpath('//mods:originInfo[not(ancestor::mods:relatedItem)]/mods:edition');
+    }
+    if ($edition_nodes && trim((string)$edition_nodes[0]) !== '') {
+        $resource->addChild('oaire:citationEdition', htmlspecialchars(trim((string)$edition_nodes[0])), $ns_oaire);
+    }
     // Conference-specific fields (Proceedings Papers)
     // Conference date: stored in mods:originInfo/mods:dateOther[@type="conferenceDate"]
     $conf_date_nodes = $mods_xml->xpath('//mods:originInfo/mods:dateOther[@type="conferenceDate"]');
     if ($conf_date_nodes && trim((string)$conf_date_nodes[0]) !== '') {
-        $resource->addChild('oaire:citationConferenceDate', htmlspecialchars(trim((string)$conf_date_nodes[0])), $ns_oaire);
+        $conf_date_iso = _oai2a_normalize_conference_date(trim((string)$conf_date_nodes[0]));
+        $resource->addChild('oaire:citationConferenceDate', htmlspecialchars($conf_date_iso), $ns_oaire);
     }
     // Conference place: stored in mods:originInfo/mods:place/mods:placeTerm (first non-publisher originInfo)
     // We pick the placeTerm that is NOT inside a relatedItem (i.e., top-level originInfo)
