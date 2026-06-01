@@ -1175,6 +1175,8 @@ function _oai2a_map_license_to_uri($license_text) {
         $v = preg_replace('#\.$#', '', rtrim($v, '/')) . '/';
         // Fix known typo: by-ncsa → by-nc-sa
         $v = str_replace('/by-ncsa/', '/by-nc-sa/', $v);
+        // CC0 only exists as 1.0 — correct any wrong version stored in the URL
+        $v = preg_replace('#/publicdomain/zero/[^/]+/#', '/publicdomain/zero/1.0/', $v);
         // Ensure single trailing slash
         $v = rtrim($v, '/') . '/';
         return $v;
@@ -1183,9 +1185,9 @@ function _oai2a_map_license_to_uri($license_text) {
     $lc = strtolower($v);
 
     // --- Shape 3: CC0 / Public Domain Zero ---
+    // CC0 only exists as version 1.0 — ignore any version string that may follow.
     if (preg_match('/^cc\s*0\b/', $lc)) {
-        $ver = preg_match('/(\d+\.\d+)/', $v, $m) ? $m[1] : '1.0';
-        return 'https://creativecommons.org/publicdomain/zero/' . $ver . '/';
+        return 'https://creativecommons.org/publicdomain/zero/1.0/';
     }
 
     // --- Shape 2: CC BY variants ---
