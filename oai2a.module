@@ -1135,14 +1135,69 @@ function _oai2a_analyze_access($object) {
 }
 
 /**
- * Maps text licenses (e.g. "CC BY") to standard URIs.
+ * Maps a license string to a canonical Creative Commons URL.
+ *
+ * Handles three input shapes:
+ *   1. Already a CC/publicdomain URL  → normalised to https://creativecommons.org/…/
+ *   2. "CC BY[-NC][-ND|-SA] X.Y"     → https://creativecommons.org/licenses/<slug>/<ver>/
+ *   3. "CC0[[ ]X.Y]"                 → https://creativecommons.org/publicdomain/zero/<ver>/
+ *
+ * URL normalisation applied to shape 1:
+ *   - http → https, creativecommons.org host
+ *   - strips /legalcode and /deed.* suffixes
+ *   - strips trailing dot or extraneous punctuation
+ *   - corrects known typo "by-ncsa" → "by-nc-sa"
+ *   - uppercased path segments are lowercased
+ *   - ensures exactly one trailing slash
+ *   - jurisdiction variants (/uk/, /igo/, etc.) are preserved as-is
+ *
+ * If no version is present the function returns null so no URL is emitted
+ * rather than asserting a wrong version.  Once the remaining records
+ * receive their version string this will start producing URLs automatically.
  */
 function _oai2a_map_license_to_uri($license_text) {
-    // DORA does not record license version, so we cannot safely map abbreviations
-    // like "CC BY-NC" to a versioned URL (e.g. /4.0/) without asserting false information.
-    // Only map licenses that are already expressed as URLs in the source data.
     $v = trim($license_text);
-    if (strpos($v, 'http') === 0) return $v;
+    if ($v === '') return null;
+
+    // --- Shape 1: input is already a URL ---
+    if (preg_match('/^https?:\/\/(creativecommons\.org|www\.creativecommons\.org)\//i', $v)) {
+        // Lowercase scheme + host + path
+        $v = strtolower($v);
+        // Force https
+        $v = preg_replace('/^http:\/\//', 'https://', $v);
+        // Remove www.
+        $v = str_replace('https://www.creativecommons.org/', 'https://creativecommons.org/', $v);
+        // Strip /legalcode suffix (with or without leading slash)
+        $v = preg_replace('#/legalcode/?$#', '/', $v);
+        // Strip /deed.* suffix
+        $v = preg_replace('#/deed\.[a-z_]+/?$#', '/', $v);
+        // Strip trailing dot or extraneous chars before the final slash
+        $v = preg_replace('#\.$#', '', rtrim($v, '/')) . '/';
+        // Fix known typo: by-ncsa → by-nc-sa
+        $v = str_replace('/by-ncsa/', '/by-nc-sa/', $v);
+        // Ensure single trailing slash
+        $v = rtrim($v, '/') . '/';
+        return $v;
+    }
+
+    $lc = strtolower($v);
+
+    // --- Shape 3: CC0 / Public Domain Zero ---
+    if (preg_match('/^cc\s*0\b/', $lc)) {
+        $ver = preg_match('/(\d+\.\d+)/', $v, $m) ? $m[1] : '1.0';
+        return 'https://creativecommons.org/publicdomain/zero/' . $ver . '/';
+    }
+
+    // --- Shape 2: CC BY variants ---
+    // Matches: CC BY, CC BY-NC, CC BY-ND, CC BY-SA, CC BY-NC-ND, CC BY-NC-SA
+    if (preg_match('/^cc\s+by((?:-nc)?(?:-nd|-sa)?)\b/i', $v, $tm)) {
+        $slug = 'by' . strtolower($tm[1]);  // e.g. "by-nc-nd"
+        if (!preg_match('/(\d+\.\d+)/', $v, $vm)) {
+            return null; // version not yet recorded — do not emit a wrong URL
+        }
+        return 'https://creativecommons.org/licenses/' . $slug . '/' . $vm[1] . '/';
+    }
+
     return null;
 }
 
