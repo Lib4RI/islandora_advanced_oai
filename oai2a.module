@@ -967,12 +967,26 @@ function _oai2a_handle_list_sets($xml, $params) {
         $response = drupal_http_request($request_url);
         if ($response->code == 200) {
             $data = json_decode($response->data, true);
+            // Sets that exist for internal workflows only and must not be
+            // exposed to external harvesters via ListSets.
+            $hidden_sets = array(
+                'eawag_doi-pubs',
+                'empa_doi-pubs',
+                'wsl_doi-pubs',
+                'psi_doi-pubs',
+                'psi_staged',
+            );
+
             if (isset($data['response']['docs'])) {
                 foreach ($data['response']['docs'] as $doc) {
+                    $setSpec = str_replace(':', '_', $doc['PID']);
+
+                    // Skip internal sets.
+                    if (in_array($setSpec, $hidden_sets)) continue;
+
                     $set = $listSets->addChild('set');
                     // Use PID as setSpec, replacing colon with underscore for safety (though colon is allowed)
                     // Consistent with ListRecords logic
-                    $setSpec = str_replace(':', '_', $doc['PID']);
                     $set->addChild('setSpec', htmlspecialchars($setSpec));
 
                     $setName = isset($doc['fgs_label_s']) ? $doc['fgs_label_s'] : $doc['PID'];
