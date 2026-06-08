@@ -1439,7 +1439,8 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
   // know the DSID so OpenAIRE can include the file location with restricted URI.
   $pdf_url = null;
   if (!empty($access_data['best_dsid'])) {
-      $pdf_url = url("islandora/object/{$object->id}/datastream/{$access_data['best_dsid']}/view", array('absolute' => TRUE));
+      global $base_url;
+      $pdf_url = $base_url . '/dload/' . $object->id . '/' . $access_data['best_dsid'] . '/view';
   }
 
   $use_solr = !empty($solr_doc);
