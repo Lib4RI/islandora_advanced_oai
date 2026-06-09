@@ -1656,7 +1656,7 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         }
     }
 
-    $landing_url = $base_url . '/islandora/object/' . $object->id;
+    $landing_url = $base_url . '/item/' . $object->id;
     $oai_dc->addChild('dc:identifier', htmlspecialchars($landing_url), $dc_ns);
     if ($pdf_url && $access_data['is_open_access']) $oai_dc->addChild('dc:identifier', htmlspecialchars($pdf_url), $dc_ns);
 
@@ -2142,7 +2142,7 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
 
     // --- RECOMMENDED: datacite:alternateIdentifiers ---
     $alt_ids = array();
-    $alt_ids[] = array('type' => 'URL', 'value' => $base_url . '/islandora/object/' . $object->id);
+    $alt_ids[] = array('type' => 'URL', 'value' => $base_url . '/item/' . $object->id);
     if ($doi) {
         // PID as alternate when DOI is primary
         $alt_ids[] = array('type' => 'HANDLE', 'value' => $object->id);
