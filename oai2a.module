@@ -1113,15 +1113,20 @@ function _oai2a_analyze_access($object) {
       return $result;
   }
 
-  // Selection Strategy: Published > Accepted > Any Public
+  // Selection Strategy: Published > Accepted only.
+  // Supplemental material, errata, and private PDFs must never be the best OA version.
+  $pool = array_filter($candidates, function($c) {
+      $v = strtolower($c['version']);
+      return strpos($v, 'published') !== false || strpos($v, 'accepted') !== false;
+  });
+
   $selected = null;
-  foreach ($candidates as $c) { if ($c['is_public_now'] && strpos(strtolower($c['version']), 'published') !== false) { $selected = $c; break; } }
-  if (!$selected) foreach ($candidates as $c) { if ($c['is_public_now'] && strpos(strtolower($c['version']), 'accepted') !== false) { $selected = $c; break; } }
-  if (!$selected) foreach ($candidates as $c) { if ($c['is_public_now']) { $selected = $c; break; } }
+  foreach ($pool as $c) { if ($c['is_public_now'] && strpos(strtolower($c['version']), 'published') !== false) { $selected = $c; break; } }
+  if (!$selected) foreach ($pool as $c) { if ($c['is_public_now'] && strpos(strtolower($c['version']), 'accepted') !== false) { $selected = $c; break; } }
 
   // If nothing is open, check for active (future) embargoes so we can expose the embargo date.
   if (!$selected) {
-      foreach ($candidates as $c) {
+      foreach ($pool as $c) {
           // availability="date" with a future date = explicitly embargoed until that date.
           if ($c['availability'] === 'date' && !empty($c['embargo_date'])) {
               $ts = strtotime($c['embargo_date']);
