@@ -1027,7 +1027,7 @@ function _oai2a_build_header($parent, $pid, $last_mod, $sets = array()) {
   // e.g., eawag:19000 → oai:dora:eawag_19000
   $oai_id = 'oai:dora:' . str_replace(':', '_', $pid);
   $header->addChild('identifier', htmlspecialchars($oai_id));
-  $last_mod = '2026-06-09T00:00:00Z';
+  if ($last_mod instanceof DateTime) $last_mod = $last_mod->format('Y-m-d\TH:i:s\Z');
   $header->addChild('datestamp', $last_mod);
 
   foreach ($sets as $setSpec) {
