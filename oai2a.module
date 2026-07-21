@@ -2477,3 +2477,18 @@ function oai2a_islandora_object_modified($object) {
 function oai2a_islandora_datastream_modified($object, $datastream) {
   cache_clear_all('oai2a:', 'cache', TRUE);
 }
+
+/**
+ * Helper to safely append oaire: prefixed nodes without SimpleXML stripping the prefix.
+ */
+function _oai2a_add_oaire_child($sxe, $name, $value = null) {
+    $dom = dom_import_simplexml($sxe);
+    $doc = $dom->ownerDocument;
+    $ns_oaire = 'http://namespace.openaire.eu/schema/oaire/';
+    $child = $doc->createElementNS($ns_oaire, 'oaire:' . $name);
+    if ($value !== null && $value !== '') {
+        $child->appendChild($doc->createTextNode($value));
+    }
+    $dom->appendChild($child);
+    return simplexml_import_dom($child);
+}
