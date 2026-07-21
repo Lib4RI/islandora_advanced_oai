@@ -2040,10 +2040,9 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     }
 
     // --- MANDATORY IF APPLICABLE: datacite:creators + datacite:contributors ---
-    $creators_node = $resource->addChild('datacite:creators', null, $ns_datacite);
-    $contributors_node = null;
     $found_funders = array();
-    $has_creators = false;
+    $collected_creators = array();
+    $collected_contributors = array();
 
     foreach ($mods_xml->xpath('//mods:name') as $name) {
         $roles = $name->xpath('mods:role/mods:roleTerm');
@@ -2051,17 +2050,9 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         $is_contributor = false;
         $role_text = '';
 
-        $is_wsl = (strpos($object->id, 'wsl:') === 0);
-
         foreach ($roles as $r) {
             $rt = strtolower(trim((string)$r));
             if ($rt === 'funder') { $is_funder = true; $found_funders[] = $name; }
-            
-            // Map WSL editors to creators
-            if ($is_wsl && $rt === 'editor') {
-                continue;
-            }
-            
             if (in_array($rt, array('editor', 'contributor', 'supervisor', 'collaborator'))) {
                 $is_contributor = true;
                 $role_text = $rt;
@@ -2087,33 +2078,58 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         $family = $family_nodes ? trim((string)$family_nodes[0]) : '';
         $given  = $given_nodes  ? trim((string)$given_nodes[0])  : '';
 
+        $person = array(
+            'fullname' => $fullname,
+            'given' => $given,
+            'family' => $family,
+            'orcid' => $orcid,
+            'affiliation' => $affiliation,
+            'role_text' => $role_text
+        );
+
         if ($is_contributor) {
-            if (!$contributors_node) $contributors_node = $resource->addChild('datacite:contributors', null, $ns_datacite);
+            $collected_contributors[] = $person;
+        } else {
+            $collected_creators[] = $person;
+        }
+    }
+
+    // Elevate contributors to creators if there are no creators (to satisfy OpenAIRE/DataCite)
+    if (empty($collected_creators) && !empty($collected_contributors)) {
+        $collected_creators = $collected_contributors;
+        $collected_contributors = array();
+    }
+
+    $creators_node = $resource->addChild('datacite:creators', null, $ns_datacite);
+    foreach ($collected_creators as $person) {
+        $c = $creators_node->addChild('datacite:creator', null, $ns_datacite);
+        $c->addChild('datacite:creatorName', htmlspecialchars($person['fullname']), $ns_datacite);
+        if ($person['given'])  $c->addChild('datacite:givenName',  htmlspecialchars($person['given']),  $ns_datacite);
+        if ($person['family']) $c->addChild('datacite:familyName', htmlspecialchars($person['family']), $ns_datacite);
+        if ($person['orcid']) {
+            $ni = $c->addChild('datacite:nameIdentifier', htmlspecialchars($person['orcid']), $ns_datacite);
+            $ni->addAttribute('nameIdentifierScheme', 'ORCID');
+            $ni->addAttribute('schemeURI', 'https://orcid.org');
+        }
+        if ($person['affiliation']) $c->addChild('datacite:affiliation', htmlspecialchars($person['affiliation']), $ns_datacite);
+    }
+
+    if (!empty($collected_contributors)) {
+        $contributors_node = $resource->addChild('datacite:contributors', null, $ns_datacite);
+        foreach ($collected_contributors as $person) {
             $c = $contributors_node->addChild('datacite:contributor', null, $ns_datacite);
             $contributorType = 'Other';
-            if (strpos($role_text, 'editor') !== false)     $contributorType = 'Editor';
-            if (strpos($role_text, 'supervisor') !== false) $contributorType = 'Supervisor';
+            if (strpos($person['role_text'], 'editor') !== false)     $contributorType = 'Editor';
+            if (strpos($person['role_text'], 'supervisor') !== false) $contributorType = 'Supervisor';
             $c->addAttribute('contributorType', $contributorType);
-            $c->addChild('datacite:contributorName', htmlspecialchars($fullname), $ns_datacite);
-            if ($given)  $c->addChild('datacite:givenName',  htmlspecialchars($given),  $ns_datacite);
-            if ($family) $c->addChild('datacite:familyName', htmlspecialchars($family), $ns_datacite);
-            if ($orcid) {
-                $ni = $c->addChild('datacite:nameIdentifier', htmlspecialchars($orcid), $ns_datacite);
+            $c->addChild('datacite:contributorName', htmlspecialchars($person['fullname']), $ns_datacite);
+            if ($person['given'])  $c->addChild('datacite:givenName',  htmlspecialchars($person['given']),  $ns_datacite);
+            if ($person['family']) $c->addChild('datacite:familyName', htmlspecialchars($person['family']), $ns_datacite);
+            if ($person['orcid']) {
+                $ni = $c->addChild('datacite:nameIdentifier', htmlspecialchars($person['orcid']), $ns_datacite);
                 $ni->addAttribute('nameIdentifierScheme', 'ORCID');
                 $ni->addAttribute('schemeURI', 'https://orcid.org');
             }
-        } else {
-            $c = $creators_node->addChild('datacite:creator', null, $ns_datacite);
-            $c->addChild('datacite:creatorName', htmlspecialchars($fullname), $ns_datacite);
-            if ($given)  $c->addChild('datacite:givenName',  htmlspecialchars($given),  $ns_datacite);
-            if ($family) $c->addChild('datacite:familyName', htmlspecialchars($family), $ns_datacite);
-            if ($orcid) {
-                $ni = $c->addChild('datacite:nameIdentifier', htmlspecialchars($orcid), $ns_datacite);
-                $ni->addAttribute('nameIdentifierScheme', 'ORCID');
-                $ni->addAttribute('schemeURI', 'https://orcid.org');
-            }
-            if ($affiliation) $c->addChild('datacite:affiliation', htmlspecialchars($affiliation), $ns_datacite);
-            $has_creators = true;
         }
     }
 
