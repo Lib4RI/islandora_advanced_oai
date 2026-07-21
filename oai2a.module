@@ -2019,6 +2019,7 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     // Build <resource> via DOM so we can set xsi:schemaLocation on the root element.
     $dom = dom_import_simplexml($metadataNode)->ownerDocument;
     $res_el = $dom->createElementNS($ns_oaire, 'resource');
+    $res_el->setAttributeNS('http://www.w3.org/2000/xmlns/', 'xmlns:oaire', $ns_oaire);
     $res_el->setAttributeNS('http://www.w3.org/2000/xmlns/', 'xmlns:xsi', $ns_xsi);
     $res_el->setAttributeNS('http://www.w3.org/2000/xmlns/', 'xmlns:datacite', $ns_datacite);
     $res_el->setAttributeNS('http://www.w3.org/2000/xmlns/', 'xmlns:dc', $ns_dc);
@@ -2050,9 +2051,17 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         $is_contributor = false;
         $role_text = '';
 
+        $is_wsl = (strpos($object->id, 'wsl:') === 0);
+
         foreach ($roles as $r) {
             $rt = strtolower(trim((string)$r));
             if ($rt === 'funder') { $is_funder = true; $found_funders[] = $name; }
+            
+            // Map WSL editors to creators
+            if ($is_wsl && $rt === 'editor') {
+                continue;
+            }
+            
             if (in_array($rt, array('editor', 'contributor', 'supervisor', 'collaborator'))) {
                 $is_contributor = true;
                 $role_text = $rt;
@@ -2130,7 +2139,7 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     } elseif (strpos($genre, 'review') !== false) {
         $type_uri = 'http://purl.org/coar/resource_type/c_dcae04bc'; $type_text = 'review article';
     }
-    $rt = $resource->addChild('oaire:resourceType', $type_text, $ns_oaire);
+    $rt = $resource->addChild('oaire:resourceType', $type_text);
     $rt->addAttribute('resourceTypeGeneral', 'literature');
     $rt->addAttribute('uri', $type_uri);
 
@@ -2246,26 +2255,26 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     // --- RECOMMENDED: oaire:citation* fields ---
     // Host title (journal or proceedings)
     if ($journal_nodes) {
-        $resource->addChild('oaire:citationTitle', htmlspecialchars(trim((string)$journal_nodes[0])), $ns_oaire);
+        $resource->addChild('oaire:citationTitle', htmlspecialchars(trim((string)$journal_nodes[0])));
     }
     // Volume
     $vol_nodes = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:part/mods:detail[@type="volume"]/mods:number');
     if ($vol_nodes && trim((string)$vol_nodes[0]) !== '') {
-        $resource->addChild('oaire:citationVolume', htmlspecialchars(trim((string)$vol_nodes[0])), $ns_oaire);
+        $resource->addChild('oaire:citationVolume', htmlspecialchars(trim((string)$vol_nodes[0])));
     }
     // Issue
     $issue_nodes = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:part/mods:detail[@type="issue"]/mods:number');
     if ($issue_nodes && trim((string)$issue_nodes[0]) !== '') {
-        $resource->addChild('oaire:citationIssue', htmlspecialchars(trim((string)$issue_nodes[0])), $ns_oaire);
+        $resource->addChild('oaire:citationIssue', htmlspecialchars(trim((string)$issue_nodes[0])));
     }
     // Start / End page
     $sp_nodes = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:part/mods:extent[@unit="page"]/mods:start');
     $ep_nodes = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:part/mods:extent[@unit="page"]/mods:end');
     if ($sp_nodes && trim((string)$sp_nodes[0]) !== '') {
-        $resource->addChild('oaire:citationStartPage', htmlspecialchars(trim((string)$sp_nodes[0])), $ns_oaire);
+        $resource->addChild('oaire:citationStartPage', htmlspecialchars(trim((string)$sp_nodes[0])));
     }
     if ($ep_nodes && trim((string)$ep_nodes[0]) !== '') {
-        $resource->addChild('oaire:citationEndPage', htmlspecialchars(trim((string)$ep_nodes[0])), $ns_oaire);
+        $resource->addChild('oaire:citationEndPage', htmlspecialchars(trim((string)$ep_nodes[0])));
     }
     // Edition: stored in mods:originInfo/mods:edition or relatedItem/mods:originInfo/mods:edition
     $edition_nodes = $mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:originInfo/mods:edition');
@@ -2273,20 +2282,20 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         $edition_nodes = $mods_xml->xpath('//mods:originInfo[not(ancestor::mods:relatedItem)]/mods:edition');
     }
     if ($edition_nodes && trim((string)$edition_nodes[0]) !== '') {
-        $resource->addChild('oaire:citationEdition', htmlspecialchars(trim((string)$edition_nodes[0])), $ns_oaire);
+        $resource->addChild('oaire:citationEdition', htmlspecialchars(trim((string)$edition_nodes[0])));
     }
     // Conference-specific fields (Proceedings Papers)
     // Conference date: stored in mods:originInfo/mods:dateOther[@type="conferenceDate"]
     $conf_date_nodes = $mods_xml->xpath('//mods:originInfo/mods:dateOther[@type="conferenceDate"]');
     if ($conf_date_nodes && trim((string)$conf_date_nodes[0]) !== '') {
         $conf_date_iso = _oai2a_normalize_conference_date(trim((string)$conf_date_nodes[0]));
-        $resource->addChild('oaire:citationConferenceDate', htmlspecialchars($conf_date_iso), $ns_oaire);
+        $resource->addChild('oaire:citationConferenceDate', htmlspecialchars($conf_date_iso));
     }
     // Conference place: stored in mods:originInfo/mods:place/mods:placeTerm (first non-publisher originInfo)
     // We pick the placeTerm that is NOT inside a relatedItem (i.e., top-level originInfo)
     $conf_place_nodes = $mods_xml->xpath('//mods:originInfo[mods:place]/mods:place/mods:placeTerm[not(ancestor::mods:relatedItem)]');
     if ($conf_place_nodes && trim((string)$conf_place_nodes[0]) !== '') {
-        $resource->addChild('oaire:citationConferencePlace', htmlspecialchars(trim((string)$conf_place_nodes[0])), $ns_oaire);
+        $resource->addChild('oaire:citationConferencePlace', htmlspecialchars(trim((string)$conf_place_nodes[0])));
     }
 
     // --- MANDATORY: datacite:rights (access rights, COAR URI) ---
@@ -2307,7 +2316,7 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     // --- RECOMMENDED: oaire:licenseCondition ---
     if ($access_data['is_open_access'] && !empty($access_data['license'])) {
         $license_uri = _oai2a_map_license_to_uri($access_data['license']);
-        $lc = $resource->addChild('oaire:licenseCondition', htmlspecialchars($access_data['license']), $ns_oaire);
+        $lc = $resource->addChild('oaire:licenseCondition', htmlspecialchars($access_data['license']));
         if ($license_uri) $lc->addAttribute('uri', $license_uri);
     }
 
@@ -2315,7 +2324,7 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     if (!empty($access_data['version'])) {
         $version_uri = _oai2a_map_version($access_data['version']);
         if ($version_uri) {
-            $v = $resource->addChild('oaire:version', htmlspecialchars($access_data['version']), $ns_oaire);
+            $v = $resource->addChild('oaire:version', htmlspecialchars($access_data['version']));
             $v->addAttribute('uri', $version_uri);
         }
     }
@@ -2333,7 +2342,7 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     // Include file URL for all items (open access and embargoed). The accessRightsURI attribute
     // signals the embargo status to OpenAIRE harvesters; Fedora enforces actual download access.
     if ($pdf_url) {
-        $file_el = $resource->addChild('oaire:file', htmlspecialchars($pdf_url), $ns_oaire);
+        $file_el = $resource->addChild('oaire:file', htmlspecialchars($pdf_url));
         $file_el->addAttribute('accessRightsURI', $ar_uri);
         $file_el->addAttribute('mimeType', 'application/pdf');
         $file_el->addAttribute('objectType', 'fulltext');
@@ -2342,22 +2351,22 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     // --- MANDATORY IF APPLICABLE: oaire:fundingReferences ---
     $funding_refs = _oai2a_parse_funding_refs($mods_xml);
     if (!empty($funding_refs)) {
-        $fundingRefs = $resource->addChild('oaire:fundingReferences', null, $ns_oaire);
+        $fundingRefs = $resource->addChild('oaire:fundingReferences');
         foreach ($funding_refs as $fr) {
-            $ref = $fundingRefs->addChild('oaire:fundingReference', null, $ns_oaire);
-            $ref->addChild('oaire:funderName', htmlspecialchars($fr['funder_name']), $ns_oaire);
+            $ref = $fundingRefs->addChild('oaire:fundingReference');
+            $ref->addChild('oaire:funderName', htmlspecialchars($fr['funder_name']));
             if ($fr['funder_id'] !== '') {
-                $fi = $ref->addChild('oaire:funderIdentifier', htmlspecialchars($fr['funder_id']), $ns_oaire);
+                $fi = $ref->addChild('oaire:funderIdentifier', htmlspecialchars($fr['funder_id']));
                 $fi->addAttribute('funderIdentifierType', $fr['funder_id_type']);
             }
             if ($fr['funding_stream'] !== '') {
-                $ref->addChild('oaire:fundingStream', htmlspecialchars($fr['funding_stream']), $ns_oaire);
+                $ref->addChild('oaire:fundingStream', htmlspecialchars($fr['funding_stream']));
             }
             if ($fr['award_number'] !== '') {
-                $ref->addChild('oaire:awardNumber', htmlspecialchars($fr['award_number']), $ns_oaire);
+                $ref->addChild('oaire:awardNumber', htmlspecialchars($fr['award_number']));
             }
             if ($fr['award_title'] !== '') {
-                $ref->addChild('oaire:awardTitle', htmlspecialchars($fr['award_title']), $ns_oaire);
+                $ref->addChild('oaire:awardTitle', htmlspecialchars($fr['award_title']));
             }
         }
     }
