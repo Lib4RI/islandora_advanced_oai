@@ -1789,10 +1789,26 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         } elseif (strpos($v_lower, 'accepted') !== false) {
             $oai_dc->addChild('dc:type', 'info:eu-repo/semantics/acceptedVersion', $dc_ns);
         }
+        // COAR Version Types URI in addition (same vocabulary as oai_openaire), after the DRIVER term.
+        $version_uri = _oai2a_map_version($access_data['version']);
+        if ($version_uri) $oai_dc->addChild('dc:type', $version_uri, $dc_ns);
+    }
+
+    // Access rights: the info:eu-repo term comes first (required by OpenAIRE Guidelines 3.0 /
+    // DRIVER harvesters); the COAR Access Rights URI follows for COAR-aware harvesters.
+    if ($access_data['is_open_access']) {
+        $coar_access_uri = 'http://purl.org/coar/access_right/c_abf2';
+    } elseif ($access_data['embargo_end_date']) {
+        $coar_access_uri = 'http://purl.org/coar/access_right/c_f1cf';
+    } elseif ($access_data['metadata_only']) {
+        $coar_access_uri = 'http://purl.org/coar/access_right/c_14cb';
+    } else {
+        $coar_access_uri = 'http://purl.org/coar/access_right/c_16ec';
     }
 
     if ($access_data['is_open_access']) {
         $oai_dc->addChild('dc:rights', 'info:eu-repo/semantics/openAccess', $dc_ns);
+        $oai_dc->addChild('dc:rights', $coar_access_uri, $dc_ns);
         $license_uri = _oai2a_map_license_to_uri($access_data['license']);
         if ($license_uri) {
             $oai_dc->addChild('dc:rights', $license_uri, $dc_ns);
@@ -1801,6 +1817,7 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         }
     } elseif ($access_data['embargo_end_date']) {
         $oai_dc->addChild('dc:rights', 'info:eu-repo/semantics/embargoedAccess', $dc_ns);
+        $oai_dc->addChild('dc:rights', $coar_access_uri, $dc_ns);
         // Machine-readable embargo end date in W3CDTF format (Unpaywall and BASE recognise this).
         $embargo_date = _oai2a_w3cdtf_date($access_data['embargo_end_date']);
         if ($embargo_date === '') $embargo_date = $access_data['embargo_end_date'];
@@ -1808,8 +1825,10 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     } elseif ($access_data['metadata_only']) {
         // info:eu-repo has no "metadata only"; OpenAIRE maps COAR c_14cb to closedAccess.
         $oai_dc->addChild('dc:rights', 'info:eu-repo/semantics/closedAccess', $dc_ns);
+        $oai_dc->addChild('dc:rights', $coar_access_uri, $dc_ns);
     } else {
         $oai_dc->addChild('dc:rights', 'info:eu-repo/semantics/restrictedAccess', $dc_ns);
+        $oai_dc->addChild('dc:rights', $coar_access_uri, $dc_ns);
     }
   }
 
