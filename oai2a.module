@@ -1151,7 +1151,17 @@ function _oai2a_analyze_access($object) {
               }
           }
       }
-      return $result; // Restricted / intranet / private
+      // Restricted / intranet / private: still expose the version we hold (Published > Accepted),
+      // but no license or best_dsid — there is no downloadable file to describe.
+      foreach (array('published', 'accepted') as $wanted) {
+          foreach ($pool as $c) {
+              if (strpos(strtolower($c['version']), $wanted) !== false) {
+                  $result['version'] = $c['version'];
+                  return $result;
+              }
+          }
+      }
+      return $result;
   }
 
   // Found an open file
