@@ -1042,7 +1042,18 @@ function _oai2a_analyze_access($object) {
   // has_candidates distinguishes "no embargo metadata found at all" (legacy records —
   // RELS-EXT fallback may still declare OA) from "metadata found and it says not OA"
   // (authoritative — the fallback must not override it).
-  $result = array('is_open_access' => false, 'license' => '', 'version' => '', 'best_dsid' => '', 'embargo_end_date' => null, 'access_rights_uri' => 'http://purl.org/coar/access_right/c_16ec', 'has_candidates' => false);
+  $result = array('is_open_access' => false, 'license' => '', 'version' => '', 'best_dsid' => '', 'embargo_end_date' => null, 'access_rights_uri' => 'http://purl.org/coar/access_right/c_16ec', 'has_candidates' => false, 'metadata_only' => false);
+
+  // No PDF datastream at all: DORA holds only metadata (PDFs are the only file type).
+  $has_pdf = false;
+  foreach ($object as $ds) {
+      if (strpos($ds->id, 'PDF') !== false) { $has_pdf = true; break; }
+  }
+  if (!$has_pdf) {
+      $result['metadata_only'] = true;
+      $result['access_rights_uri'] = 'http://purl.org/coar/access_right/c_14cb'; // Metadata only
+      return $result;
+  }
 
   if (!isset($object['RELS-INT'])) return $result;
   $content = $object['RELS-INT']->content;
@@ -1459,7 +1470,8 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
   // When RELS-INT did evaluate candidates and rejected them (e.g. only a supplemental
   // PDF is public), that verdict is authoritative — otherwise we would claim
   // openAccess with no version and no downloadable file.
-  if (!$access_data['is_open_access'] && !$access_data['embargo_end_date'] && !$access_data['has_candidates']) {
+  // Never for metadata-only records: without a file there is nothing to be open.
+  if (!$access_data['is_open_access'] && !$access_data['embargo_end_date'] && !$access_data['has_candidates'] && !$access_data['metadata_only']) {
       $ext_data = _oai2a_parse_rels_ext($object);
       if ($ext_data['is_open_access']) $access_data['is_open_access'] = true;
   }
@@ -1713,6 +1725,9 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         $embargo_date = _oai2a_w3cdtf_date($access_data['embargo_end_date']);
         if ($embargo_date === '') $embargo_date = $access_data['embargo_end_date'];
         $oai_dc->addChild('dc:rights', 'info:eu-repo/date/embargoEnd/' . $embargo_date, $dc_ns);
+    } elseif ($access_data['metadata_only']) {
+        // info:eu-repo has no "metadata only"; OpenAIRE maps COAR c_14cb to closedAccess.
+        $oai_dc->addChild('dc:rights', 'info:eu-repo/semantics/closedAccess', $dc_ns);
     } else {
         $oai_dc->addChild('dc:rights', 'info:eu-repo/semantics/restrictedAccess', $dc_ns);
     }
@@ -2012,6 +2027,9 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     } elseif ($access_data['embargo_end_date']) {
         $qdc->addChild('dcterms:accessRights', 'info:eu-repo/semantics/embargoedAccess', $dcterms_ns);
         $qdc->addChild('dc:rights', 'Embargo end date: ' . $access_data['embargo_end_date'], $dc_ns);
+    } elseif ($access_data['metadata_only']) {
+        $qdc->addChild('dcterms:accessRights', 'info:eu-repo/semantics/closedAccess', $dcterms_ns);
+        $qdc->addChild('dc:rights', 'Metadata Only', $dc_ns);
     } else {
         $qdc->addChild('dcterms:accessRights', 'info:eu-repo/semantics/restrictedAccess', $dcterms_ns);
         $qdc->addChild('dc:rights', 'Restricted Access', $dc_ns);
@@ -2352,6 +2370,9 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     } elseif ($access_data['embargo_end_date']) {
         $ar_label = 'embargoed access';
         $ar_uri   = 'http://purl.org/coar/access_right/c_f1cf';
+    } elseif ($access_data['metadata_only']) {
+        $ar_label = 'metadata only access';
+        $ar_uri   = 'http://purl.org/coar/access_right/c_14cb';
     } else {
         $ar_label = 'restricted access';
         $ar_uri   = 'http://purl.org/coar/access_right/c_16ec';
