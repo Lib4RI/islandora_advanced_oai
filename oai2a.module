@@ -1395,6 +1395,88 @@ function _oai2a_normalize_conference_date($raw) {
 }
 
 /**
+ * Collects and classifies the external identifiers of a record from MODS.
+ *
+ * Shared by oai_dc and oai_openaire so both formats classify identically.
+ * Each entry: 'type' (DataCite relatedIdentifierType), 'value', 'container'
+ * (true = identifies the host journal/book, not the record) and 'scheme'
+ * (info:eu-repo altIdentifier scheme, null where none exists).
+ *
+ * - Only top-level identifiers describe the record itself; relatedItem
+ *   identifiers describe other resources (host ISSN/EISSN/ISBN/DOI are kept
+ *   as container identifiers).
+ * - DORA stores the ISBN of the containing book at top level for chapters and
+ *   conference papers, so an ISBN is the record's own only for whole volumes.
+ *   An ISSN never identifies the record (no journals/series are records).
+ * - Scopus EIDs, PMCIDs and OpenAlex IDs have no DataCite type and are
+ *   returned as resolvable URLs. Local/internal IDs are skipped.
+ */
+function _oai2a_collect_identifiers(SimpleXMLElement $mods_xml, $landing_url) {
+    // Whole-volume genres, matching the oai_openaire resourceType mapping
+    // (thesis, edited book, book, report — but not book chapters).
+    $genre_results = $mods_xml->xpath('//mods:genre');
+    $genre = $genre_results ? strtolower(trim((string)$genre_results[0])) : '';
+    $is_volume = strpos($genre, 'chapter') === false && (
+        strpos($genre, 'thesis') !== false || strpos($genre, 'dissertation') !== false
+        || strpos($genre, 'book') !== false || strpos($genre, 'edited volume') !== false
+        || strpos($genre, 'report') !== false);
+
+    $type_map = array(
+        'doi'    => 'DOI',
+        'isbn'   => 'ISBN',
+        'issn'   => 'ISSN',
+        'e-issn' => 'EISSN',
+        'eissn'  => 'EISSN',
+        'pmid'   => 'PMID',
+        'arxiv'  => 'arXiv',
+        'urn'    => 'URN',
+        'url'    => 'URL',
+        'uri'    => 'URL',
+        'ut'     => 'WOS',   // Web of Science UT accession number
+        'wos'    => 'WOS',
+    );
+    $scheme_map = array('DOI' => 'doi', 'ISBN' => 'isbn', 'PMID' => 'pmid', 'arXiv' => 'arxiv', 'URN' => 'urn', 'WOS' => 'wos');
+    $map = function($type, $val) use ($type_map) {
+        if ($type === 'doi') return array('DOI', preg_replace('/[?\s]+$/', '', $val));
+        if (in_array($type, array('isbn', 'issn', 'e-issn', 'eissn'))) $val = preg_replace('/\s+/', '', $val); // "3- 9808659-0-8"
+        if ($type === 'scopus') return array('URL', 'https://www.scopus.com/record/display.uri?eid=' . rawurlencode($val));
+        if ($type === 'openalex') return array('URL', 'https://openalex.org/' . rawurlencode(preg_replace('#^https?://openalex\.org/#i', '', $val)));
+        if ($type === 'pmcid') {
+            $pmc = stripos($val, 'PMC') === 0 ? $val : 'PMC' . $val;
+            return array('URL', 'https://www.ncbi.nlm.nih.gov/pmc/articles/' . rawurlencode($pmc) . '/');
+        }
+        return isset($type_map[$type]) ? array($type_map[$type], $val) : null;
+    };
+
+    $ids = array();
+    $seen = array(); // deduplicate by (type, value, container)
+    $add = function($type, $value, $container) use (&$ids, &$seen, $scheme_map) {
+        $key = $type . '|' . $value . '|' . (int)$container;
+        if (isset($seen[$key])) return;
+        $seen[$key] = true;
+        $ids[] = array('type' => $type, 'value' => $value, 'container' => $container,
+                       'scheme' => isset($scheme_map[$type]) ? $scheme_map[$type] : null);
+    };
+    foreach ($mods_xml->xpath('/mods:mods/mods:identifier') as $modsid) {
+        $type = strtolower(trim((string)$modsid->attributes()->type));
+        $val  = trim((string)$modsid);
+        if ($val === '') continue;
+        $mapped = $map($type, $val);
+        if (!$mapped || $mapped[1] === '' || $mapped[1] === $landing_url) continue;
+        $container = in_array($mapped[0], array('ISSN', 'EISSN')) || ($mapped[0] === 'ISBN' && !$is_volume);
+        $add($mapped[0], $mapped[1], $container);
+    }
+    foreach ($mods_xml->xpath('/mods:mods/mods:relatedItem[@type="host"]/mods:identifier') as $id) {
+        $type = strtolower(trim((string)$id->attributes()->type));
+        $val  = trim((string)$id);
+        if ($val === '' || !in_array($type, array('issn', 'e-issn', 'eissn', 'isbn', 'doi'))) continue;
+        $mapped = $map($type, $val);
+        if ($mapped && $mapped[1] !== '') $add($mapped[0], $mapped[1], true);
+    }
+    return $ids;
+}
+
+/**
  * Extract funding references from mods:extension/mods:fundingReferences.
  *
  * Returns an array of associative arrays with keys:
@@ -1554,12 +1636,7 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         foreach (_oai2a_get_solr_val($solr_doc, $solr_map['format']) as $v)
             $oai_dc->addChild('dc:format', htmlspecialchars($v), $dc_ns);
 
-        foreach (_oai2a_get_solr_val($solr_doc, $solr_map['identifier']) as $v)
-            $oai_dc->addChild('dc:identifier', htmlspecialchars($v), $dc_ns);
-
-        // Add DOI specifically
-        foreach (_oai2a_get_solr_val($solr_doc, 'mods_identifier_doi_mt') as $v)
-            $oai_dc->addChild('dc:identifier', 'doi:' . htmlspecialchars($v), $dc_ns);
+        // Identifiers are classified from MODS below (shared with the MODS fallback).
 
         foreach (_oai2a_get_solr_val($solr_doc, $solr_map['source']) as $v)
             $oai_dc->addChild('dc:source', htmlspecialchars($v), $dc_ns);
@@ -1648,22 +1725,6 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
             $v = trim((string)$fmt);
             if ($v !== '') $oai_dc->addChild('dc:format', htmlspecialchars($v), $dc_ns);
         }
-        foreach ($mods_xml->xpath('//mods:identifier') as $id) {
-            $v   = trim((string)$id);
-            $type = strtolower(trim((string)$id->attributes()->type));
-            if ($v === '') continue;
-            if ($type === 'doi') {
-                // Sanitize and emit as resolvable URL — Unpaywall needs a URL, not a bare DOI.
-                $doi = preg_replace('/[?\s]+$/', '', $v); // strip trailing ? and whitespace
-                $oai_dc->addChild('dc:identifier', 'https://doi.org/' . htmlspecialchars($doi), $dc_ns);
-            } elseif ($type === 'uri' || $type === 'url' || strpos($v, 'http') === 0) {
-                $oai_dc->addChild('dc:identifier', htmlspecialchars($v), $dc_ns);
-            } elseif ($type === 'isbn' || $type === 'issn' || $type === 'pmid' || $type === 'pmcid') {
-                // Emit as plain identifier — informational, not a URL Unpaywall can follow.
-                $oai_dc->addChild('dc:identifier', htmlspecialchars($v), $dc_ns);
-            }
-            // Skip opaque local IDs (Scopus, WOS, internal serial numbers) — not useful for harvesters.
-        }
         foreach ($mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:titleInfo/mods:title') as $src) {
             $v = trim((string)$src);
             if ($v !== '') $oai_dc->addChild('dc:source', htmlspecialchars($v), $dc_ns);
@@ -1700,6 +1761,25 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     $landing_url = $base_url . '/item/' . $object->id;
     $oai_dc->addChild('dc:identifier', htmlspecialchars($landing_url), $dc_ns);
     if ($pdf_url && $access_data['is_open_access']) $oai_dc->addChild('dc:identifier', htmlspecialchars($pdf_url), $dc_ns);
+
+    // Classified identifiers (OpenAIRE Guidelines 3.0 / DRIVER): dc:identifier only names this
+    // record (landing page, PDF) plus the DOI as resolvable URL, which Unpaywall/BASE read there.
+    // The record's other identifiers go to dc:relation as info:eu-repo altIdentifier URIs
+    // (plain URL where no scheme exists); host journal/book identifiers go to dc:source as URNs.
+    foreach (_oai2a_collect_identifiers($mods_xml, $landing_url) as $cid) {
+        if ($cid['container']) {
+            if ($cid['type'] === 'DOI') $src = 'https://doi.org/' . $cid['value'];
+            elseif ($cid['type'] === 'ISBN') $src = 'urn:ISBN:' . $cid['value'];
+            else $src = 'urn:ISSN:' . $cid['value'];
+            $oai_dc->addChild('dc:source', htmlspecialchars($src), $dc_ns);
+            continue;
+        }
+        if ($cid['type'] === 'DOI') {
+            $oai_dc->addChild('dc:identifier', htmlspecialchars('https://doi.org/' . $cid['value']), $dc_ns);
+        }
+        $rel = $cid['scheme'] ? 'info:eu-repo/semantics/altIdentifier/' . $cid['scheme'] . '/' . $cid['value'] : $cid['value'];
+        $oai_dc->addChild('dc:relation', htmlspecialchars($rel), $dc_ns);
+    }
 
     // Add Version info to dc:type (DRIVER Guidelines)
     if (!empty($access_data['version'])) {
@@ -2209,63 +2289,11 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     $primary_id->addAttribute('identifierType', 'URL');
 
     // --- RECOMMENDED: datacite:relatedIdentifiers ---
-    // Identifiers of the publication itself (DOI, PMID, WoS, Scopus, ...) → IsIdenticalTo;
-    // identifiers of the host journal/book (ISSN, ISBN, DOI) → IsPartOf.
-    // Types must come from the DataCite relatedIdentifierType list; Scopus EIDs,
-    // PMCIDs and OpenAlex IDs have no type of their own and are emitted as resolvable URLs.
-    // Internal/local IDs are skipped — they identify nothing outside DORA.
+    // Identifiers of the publication itself → IsIdenticalTo; of the host journal/book → IsPartOf.
     $rel_ids = array();
-    $seen_rel_ids = array(); // deduplicate by (type, value, relation)
-    $add_rel_id = function($type, $value, $relation) use (&$rel_ids, &$seen_rel_ids) {
-        $key = $type . '|' . $value . '|' . $relation;
-        if (isset($seen_rel_ids[$key])) return;
-        $seen_rel_ids[$key] = true;
-        $rel_ids[] = array('type' => $type, 'value' => $value, 'relation' => $relation);
-    };
-    $rel_id_type_map = array(
-        'doi'    => 'DOI',
-        'isbn'   => 'ISBN',
-        'issn'   => 'ISSN',
-        'e-issn' => 'EISSN',
-        'eissn'  => 'EISSN',
-        'pmid'   => 'PMID',
-        'arxiv'  => 'arXiv',
-        'urn'    => 'URN',
-        'url'    => 'URL',
-        'uri'    => 'URL',
-        'ut'     => 'WOS',   // Web of Science UT accession number
-        'wos'    => 'WOS',
-    );
-    $map_rel_id = function($type, $val) use ($rel_id_type_map) {
-        if ($type === 'doi') return array('DOI', preg_replace('/[?\s]+$/', '', $val));
-        if ($type === 'scopus') return array('URL', 'https://www.scopus.com/record/display.uri?eid=' . rawurlencode($val));
-        if ($type === 'openalex') return array('URL', 'https://openalex.org/' . rawurlencode(preg_replace('#^https?://openalex\.org/#i', '', $val)));
-        if ($type === 'pmcid') {
-            $pmc = stripos($val, 'PMC') === 0 ? $val : 'PMC' . $val;
-            return array('URL', 'https://www.ncbi.nlm.nih.gov/pmc/articles/' . rawurlencode($pmc) . '/');
-        }
-        return isset($rel_id_type_map[$type]) ? array($rel_id_type_map[$type], $val) : null;
-    };
-    // Publication's own identifiers (top level only — relatedItem identifiers describe other resources).
-    // Exception: DORA stores the ISBN of the containing book at top level for chapters and
-    // conference papers, so an ISBN only identifies the record itself for whole-volume types.
-    $is_volume = in_array($type_text, array('book', 'edited book', 'thesis', 'report'));
-    foreach ($mods_xml->xpath('/mods:mods/mods:identifier') as $modsid) {
-        $type = strtolower(trim((string)$modsid->attributes()->type));
-        $val  = trim((string)$modsid);
-        if ($val === '') continue;
-        $mapped = $map_rel_id($type, $val);
-        if (!$mapped || $mapped[1] === '' || $mapped[1] === $landing_url) continue;
-        $relation = ($mapped[0] === 'ISBN' && !$is_volume) ? 'IsPartOf' : 'IsIdenticalTo';
-        $add_rel_id($mapped[0], $mapped[1], $relation);
-    }
-    // Host journal / book
-    foreach ($mods_xml->xpath('/mods:mods/mods:relatedItem[@type="host"]/mods:identifier') as $id) {
-        $type = strtolower(trim((string)$id->attributes()->type));
-        $val  = trim((string)$id);
-        if ($val === '' || !in_array($type, array('issn', 'e-issn', 'eissn', 'isbn', 'doi'))) continue;
-        $mapped = $map_rel_id($type, $val);
-        if ($mapped && $mapped[1] !== '') $add_rel_id($mapped[0], $mapped[1], 'IsPartOf');
+    foreach (_oai2a_collect_identifiers($mods_xml, $landing_url) as $cid) {
+        $rel_ids[] = array('type' => $cid['type'], 'value' => $cid['value'],
+                           'relation' => $cid['container'] ? 'IsPartOf' : 'IsIdenticalTo');
     }
     if (!empty($rel_ids)) {
         $rel_node = $resource->addChild('datacite:relatedIdentifiers', null, $ns_datacite);
