@@ -1039,7 +1039,10 @@ function _oai2a_build_header($parent, $pid, $last_mod, $sets = array()) {
  * Determines Open Access status, specific licenses, and versions.
  */
 function _oai2a_analyze_access($object) {
-  $result = array('is_open_access' => false, 'license' => '', 'version' => '', 'best_dsid' => '', 'embargo_end_date' => null, 'access_rights_uri' => 'http://purl.org/coar/access_right/c_16ec');
+  // has_candidates distinguishes "no embargo metadata found at all" (legacy records —
+  // RELS-EXT fallback may still declare OA) from "metadata found and it says not OA"
+  // (authoritative — the fallback must not override it).
+  $result = array('is_open_access' => false, 'license' => '', 'version' => '', 'best_dsid' => '', 'embargo_end_date' => null, 'access_rights_uri' => 'http://purl.org/coar/access_right/c_16ec', 'has_candidates' => false);
 
   if (!isset($object['RELS-INT'])) return $result;
   $content = $object['RELS-INT']->content;
@@ -1112,6 +1115,13 @@ function _oai2a_analyze_access($object) {
       watchdog('oai2a', 'RELS-INT for @pid has no PDF descriptions with embargo properties. Raw: @raw', array('@pid' => $object->id, '@raw' => substr($content, 0, 500)), WATCHDOG_DEBUG);
       return $result;
   }
+
+  // RELS-INT carries usable embargo metadata: from here on its verdict is authoritative.
+  // PDF descriptions without any availability value don't count — such legacy
+  // records must still be able to fall back to RELS-EXT.
+  $result['has_candidates'] = (bool) array_filter($candidates, function($c) {
+      return $c['availability'] !== '';
+  });
 
   // Selection Strategy: Published > Accepted only.
   // Supplemental material, errata, and private PDFs must never be the best OA version.
@@ -1435,7 +1445,11 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
 
   // Analyze Rights
   $access_data = _oai2a_analyze_access($object);
-  if (!$access_data['is_open_access'] && !$access_data['embargo_end_date']) {
+  // RELS-EXT fallback only for legacy records that carry no embargo metadata at all.
+  // When RELS-INT did evaluate candidates and rejected them (e.g. only a supplemental
+  // PDF is public), that verdict is authoritative — otherwise we would claim
+  // openAccess with no version and no downloadable file.
+  if (!$access_data['is_open_access'] && !$access_data['embargo_end_date'] && !$access_data['has_candidates']) {
       $ext_data = _oai2a_parse_rels_ext($object);
       if ($ext_data['is_open_access']) $access_data['is_open_access'] = true;
   }
