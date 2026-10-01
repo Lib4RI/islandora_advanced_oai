@@ -2246,14 +2246,18 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
         }
         return isset($rel_id_type_map[$type]) ? array($rel_id_type_map[$type], $val) : null;
     };
-    // Publication's own identifiers (top level only — relatedItem identifiers describe other resources)
+    // Publication's own identifiers (top level only — relatedItem identifiers describe other resources).
+    // Exception: DORA stores the ISBN of the containing book at top level for chapters and
+    // conference papers, so an ISBN only identifies the record itself for whole-volume types.
+    $is_volume = in_array($type_text, array('book', 'edited book', 'thesis', 'report'));
     foreach ($mods_xml->xpath('/mods:mods/mods:identifier') as $modsid) {
         $type = strtolower(trim((string)$modsid->attributes()->type));
         $val  = trim((string)$modsid);
         if ($val === '') continue;
         $mapped = $map_rel_id($type, $val);
         if (!$mapped || $mapped[1] === '' || $mapped[1] === $landing_url) continue;
-        $add_rel_id($mapped[0], $mapped[1], 'IsIdenticalTo');
+        $relation = ($mapped[0] === 'ISBN' && !$is_volume) ? 'IsPartOf' : 'IsIdenticalTo';
+        $add_rel_id($mapped[0], $mapped[1], $relation);
     }
     // Host journal / book
     foreach ($mods_xml->xpath('/mods:mods/mods:relatedItem[@type="host"]/mods:identifier') as $id) {
