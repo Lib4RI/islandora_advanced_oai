@@ -2183,68 +2183,74 @@ function _oai2a_generate_metadata($metadataNode, $object, $solr_doc, $prefix, $s
     $rt->addAttribute('resourceTypeGeneral', 'literature');
     $rt->addAttribute('uri', $type_uri);
 
-    // --- MANDATORY: datacite:identifier (primary — DOI preferred, else Handle) ---
-    $doi_nodes = $mods_xml->xpath('//mods:identifier[@type="doi"]');
-    $doi = $doi_nodes ? trim((string)$doi_nodes[0]) : null;
-    if ($doi) {
-        $primary_id = $resource->addChild('datacite:identifier', htmlspecialchars($doi), $ns_datacite);
-        $primary_id->addAttribute('identifierType', 'DOI');
-    } else {
-        $primary_id = $resource->addChild('datacite:identifier', htmlspecialchars($object->id), $ns_datacite);
-        $primary_id->addAttribute('identifierType', 'HANDLE');
-    }
+    // --- MANDATORY: datacite:identifier (primary — DORA landing page) ---
+    // Must identify the record in this repository, not the publication elsewhere:
+    // the publisher DOI and the bare PID are therefore not used here.
+    $landing_url = $base_url . '/item/' . $object->id;
+    $primary_id = $resource->addChild('datacite:identifier', htmlspecialchars($landing_url), $ns_datacite);
+    $primary_id->addAttribute('identifierType', 'URL');
 
-    // --- RECOMMENDED: datacite:alternateIdentifiers ---
-    $alt_ids = array();
-    $alt_ids[] = array('type' => 'URL', 'value' => $base_url . '/item/' . $object->id);
-    if ($doi) {
-        // PID as alternate when DOI is primary
-        $alt_ids[] = array('type' => 'HANDLE', 'value' => $object->id);
-    }
-    $alt_id_type_map = array(
-        'isbn'       => 'ISBN',
-        'issn'       => 'ISSN',
-        'e-issn'     => 'ISSN',
-        'eissn'      => 'ISSN',
-        'scopus'     => 'Scopus',
-        'pmid'       => 'PMID',
-        'pmcid'      => 'PMCID',
-        'arxiv'      => 'arXiv',
-        'urn'        => 'URN',
-        'url'        => 'URL',
-        'uri'        => 'URL',
-        'local'      => 'local',    // internal repository ID — valid per DataCite "local identifiers" guidance
-        'ut'         => 'WOS-UT',   // Web of Science UT accession number
-        'wos'        => 'WOS-UT',
+    // --- RECOMMENDED: datacite:relatedIdentifiers ---
+    // Identifiers of the publication itself (DOI, PMID, WoS, Scopus, ...) → IsIdenticalTo;
+    // identifiers of the host journal/book (ISSN, ISBN, DOI) → IsPartOf.
+    // Types must come from the DataCite relatedIdentifierType list; Scopus EIDs,
+    // PMCIDs and OpenAlex IDs have no type of their own and are emitted as resolvable URLs.
+    // Internal/local IDs are skipped — they identify nothing outside DORA.
+    $rel_ids = array();
+    $seen_rel_ids = array(); // deduplicate by (type, value, relation)
+    $add_rel_id = function($type, $value, $relation) use (&$rel_ids, &$seen_rel_ids) {
+        $key = $type . '|' . $value . '|' . $relation;
+        if (isset($seen_rel_ids[$key])) return;
+        $seen_rel_ids[$key] = true;
+        $rel_ids[] = array('type' => $type, 'value' => $value, 'relation' => $relation);
+    };
+    $rel_id_type_map = array(
+        'doi'    => 'DOI',
+        'isbn'   => 'ISBN',
+        'issn'   => 'ISSN',
+        'e-issn' => 'EISSN',
+        'eissn'  => 'EISSN',
+        'pmid'   => 'PMID',
+        'arxiv'  => 'arXiv',
+        'urn'    => 'URN',
+        'url'    => 'URL',
+        'uri'    => 'URL',
+        'ut'     => 'WOS',   // Web of Science UT accession number
+        'wos'    => 'WOS',
     );
-    $seen_alt_ids = array(); // deduplicate by (type, value)
-    foreach ($mods_xml->xpath('//mods:identifier') as $modsid) {
+    $map_rel_id = function($type, $val) use ($rel_id_type_map) {
+        if ($type === 'doi') return array('DOI', preg_replace('/[?\s]+$/', '', $val));
+        if ($type === 'scopus') return array('URL', 'https://www.scopus.com/record/display.uri?eid=' . rawurlencode($val));
+        if ($type === 'openalex') return array('URL', 'https://openalex.org/' . rawurlencode(preg_replace('#^https?://openalex\.org/#i', '', $val)));
+        if ($type === 'pmcid') {
+            $pmc = stripos($val, 'PMC') === 0 ? $val : 'PMC' . $val;
+            return array('URL', 'https://www.ncbi.nlm.nih.gov/pmc/articles/' . rawurlencode($pmc) . '/');
+        }
+        return isset($rel_id_type_map[$type]) ? array($rel_id_type_map[$type], $val) : null;
+    };
+    // Publication's own identifiers (top level only — relatedItem identifiers describe other resources)
+    foreach ($mods_xml->xpath('/mods:mods/mods:identifier') as $modsid) {
         $type = strtolower(trim((string)$modsid->attributes()->type));
         $val  = trim((string)$modsid);
-        if ($val === '' || $type === 'doi') continue;
-        if (isset($alt_id_type_map[$type])) {
-            $key = $alt_id_type_map[$type] . '|' . $val;
-            if (!isset($seen_alt_ids[$key])) {
-                $alt_ids[] = array('type' => $alt_id_type_map[$type], 'value' => $val);
-                $seen_alt_ids[$key] = true;
-            }
-        }
+        if ($val === '') continue;
+        $mapped = $map_rel_id($type, $val);
+        if (!$mapped || $mapped[1] === '' || $mapped[1] === $landing_url) continue;
+        $add_rel_id($mapped[0], $mapped[1], 'IsIdenticalTo');
     }
-    // ISSN from host relatedItem (deduplicated)
-    foreach ($mods_xml->xpath('//mods:relatedItem[@type="host"]/mods:identifier[@type="issn" or @type="e-issn"]') as $id) {
-        $v = trim((string)$id);
-        if ($v === '') continue;
-        $key = 'ISSN|' . $v;
-        if (!isset($seen_alt_ids[$key])) {
-            $alt_ids[] = array('type' => 'ISSN', 'value' => $v);
-            $seen_alt_ids[$key] = true;
-        }
+    // Host journal / book
+    foreach ($mods_xml->xpath('/mods:mods/mods:relatedItem[@type="host"]/mods:identifier') as $id) {
+        $type = strtolower(trim((string)$id->attributes()->type));
+        $val  = trim((string)$id);
+        if ($val === '' || !in_array($type, array('issn', 'e-issn', 'eissn', 'isbn', 'doi'))) continue;
+        $mapped = $map_rel_id($type, $val);
+        if ($mapped && $mapped[1] !== '') $add_rel_id($mapped[0], $mapped[1], 'IsPartOf');
     }
-    if (!empty($alt_ids)) {
-        $alt_node = $resource->addChild('datacite:alternateIdentifiers', null, $ns_datacite);
-        foreach ($alt_ids as $aid) {
-            $ai = $alt_node->addChild('datacite:alternateIdentifier', htmlspecialchars($aid['value']), $ns_datacite);
-            $ai->addAttribute('alternateIdentifierType', $aid['type']);
+    if (!empty($rel_ids)) {
+        $rel_node = $resource->addChild('datacite:relatedIdentifiers', null, $ns_datacite);
+        foreach ($rel_ids as $rid) {
+            $ri = $rel_node->addChild('datacite:relatedIdentifier', htmlspecialchars($rid['value']), $ns_datacite);
+            $ri->addAttribute('relatedIdentifierType', $rid['type']);
+            $ri->addAttribute('relationType', $rid['relation']);
         }
     }
 
